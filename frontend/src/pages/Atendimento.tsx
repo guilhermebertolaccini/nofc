@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Plus,
   Send,
@@ -10,6 +10,7 @@ import {
   Wifi,
   WifiOff,
   Edit,
+  Pencil,
   UserCheck,
   X,
   Check,
@@ -63,6 +64,7 @@ import {
   Template,
   getAuthToken,
   API_BASE_URL,
+  getDisplayTitle,
 } from "@/services/api";
 import {
   useRealtimeConnection,
@@ -87,12 +89,21 @@ import { useAuth } from "@/contexts/AuthContext";
 interface ConversationGroup {
   contactPhone: string;
   contactName: string;
+  /** Título manual definido pelo operador (Shared Inbox). */
+  customTitle?: string | null;
   lastMessage: string;
   lastMessageTime: string;
   isFromContact: boolean;
   unread?: boolean;
   messages: APIConversation[];
   isTabulated?: boolean; // Indica se a conversa foi tabulada
+}
+
+/** Info temporária de quem está digitando na sala atual. */
+interface TypingInfo {
+  userId: number;
+  userName: string;
+  expiresAt: number;
 }
 
 export default function Atendimento() {
@@ -123,6 +134,16 @@ export default function Atendimento() {
   const [editContactContract, setEditContactContract] = useState("");
   const [editContactIsCPC, setEditContactIsCPC] = useState(false);
   const [isSavingContact, setIsSavingContact] = useState(false);
+
+  // SHARED INBOX – Modal de renomear título do cliente/grupo
+  const [isRenameOpen, setIsRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [isRenaming, setIsRenaming] = useState(false);
+
+  // SHARED INBOX – "Fulano está digitando..." na conversa aberta
+  const [typingUsers, setTypingUsers] = useState<Map<number, TypingInfo>>(
+    new Map(),
+  );
   const previousConversationsRef = useRef<ConversationGroup[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
@@ -392,6 +413,98 @@ export default function Atendimento() {
     selectedPhoneRef.current = selectedConversation?.contactPhone || null;
   }, [selectedConversation?.contactPhone]);
 
+  // SHARED INBOX – Entrar/sair da sala da conversa selecionada
+  // Garante que typing/new_message só chegam dos clientes que o operador abriu.
+  useEffect(() => {
+    const phone = selectedConversation?.contactPhone;
+    if (!phone) return;
+    realtimeSocket.joinConversation(phone);
+    // Limpar indicador antigo ao trocar de conversa
+    setTypingUsers(new Map());
+    return () => {
+      realtimeSocket.leaveConversation(phone);
+    };
+  }, [selectedConversation?.contactPhone]);
+
+  // SHARED INBOX – Listener de "user-typing" (restrito à sala atual)
+  useRealtimeSubscription(
+    WS_EVENTS.USER_TYPING,
+    (data: {
+      contactPhone: string;
+      userId: number;
+      userName: string;
+      typing: boolean;
+    }) => {
+      if (!data || data.contactPhone !== selectedPhoneRef.current) return;
+      if (user?.id && data.userId === user.id) return; // ignora a si mesmo
+      setTypingUsers((prev) => {
+        const next = new Map(prev);
+        if (data.typing) {
+          next.set(data.userId, {
+            userId: data.userId,
+            userName: data.userName || "Usuário",
+            expiresAt: Date.now() + 4000, // auto-cleanup em 4s sem update
+          });
+        } else {
+          next.delete(data.userId);
+        }
+        return next;
+      });
+    },
+    [user?.id],
+  );
+
+  // Auto-cleanup do typing (caso o "stop" se perca)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTypingUsers((prev) => {
+        if (prev.size === 0) return prev;
+        const now = Date.now();
+        let changed = false;
+        const next = new Map(prev);
+        for (const [k, v] of next) {
+          if (v.expiresAt <= now) {
+            next.delete(k);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 1500);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Envio do evento "typing" com debounce ao digitar
+  const typingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTypingSentAtRef = useRef<number>(0);
+  const emitTyping = useCallback(
+    (phone: string | undefined | null) => {
+      if (!phone) return;
+      const now = Date.now();
+      // Throttle: 1 emissão de "true" por ~1s
+      if (now - lastTypingSentAtRef.current > 1000) {
+        realtimeSocket.sendTyping(phone, true);
+        lastTypingSentAtRef.current = now;
+      }
+      if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+      typingStopTimerRef.current = setTimeout(() => {
+        realtimeSocket.sendTyping(phone, false);
+        lastTypingSentAtRef.current = 0;
+      }, 1500);
+    },
+    [],
+  );
+
+  // Lista derivada de "Fulano está digitando..."
+  const typingDisplay = useMemo(() => {
+    const names = Array.from(typingUsers.values()).map((t) => t.userName);
+    if (names.length === 0) return null;
+    if (names.length === 1) return `${names[0]} está digitando...`;
+    if (names.length === 2)
+      return `${names[0]} e ${names[1]} estão digitando...`;
+    return `${names[0]} e mais ${names.length - 1} estão digitando...`;
+  }, [typingUsers]);
+
   const loadConversations = useCallback(async () => {
     try {
       // Carregar tanto conversas ativas quanto tabuladas para ter todos os dados
@@ -430,6 +543,7 @@ export default function Atendimento() {
           groupedMap.set(conv.contactPhone, {
             contactPhone: conv.contactPhone,
             contactName: conv.contactName,
+            customTitle: conv.customTitle ?? null,
             lastMessage: conv.message,
             lastMessageTime: conv.datetime,
             isFromContact: conv.sender === "contact",
@@ -567,6 +681,64 @@ export default function Atendimento() {
       });
     }
   }, [selectedConversation]);
+
+  // SHARED INBOX – Abrir modal de renomear título (cliente/grupo)
+  const openRenameTitle = useCallback(() => {
+    if (!selectedConversation) return;
+    setRenameValue(
+      getDisplayTitle(
+        selectedConversation.customTitle,
+        selectedConversation.contactName,
+      ),
+    );
+    setIsRenameOpen(true);
+  }, [selectedConversation]);
+
+  // SHARED INBOX – Salvar novo título via PATCH /contacts/rename/:phone
+  const handleSaveRename = useCallback(async () => {
+    if (!selectedConversation) return;
+    const value = renameValue.trim();
+    if (!value) {
+      toast({
+        title: "Título inválido",
+        description: "Digite um nome para o cliente/grupo",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsRenaming(true);
+    try {
+      await contactsService.rename(selectedConversation.contactPhone, value);
+
+      // Atualizar localmente: conversa aberta + lista lateral
+      setSelectedConversation((prev) =>
+        prev ? { ...prev, customTitle: value, contactName: value } : prev,
+      );
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.contactPhone === selectedConversation.contactPhone
+            ? { ...c, customTitle: value, contactName: value }
+            : c,
+        ),
+      );
+
+      toast({
+        title: "Título atualizado",
+        description: `O chat agora aparece como "${value}"`,
+      });
+      setIsRenameOpen(false);
+    } catch (error) {
+      toast({
+        title: "Erro ao renomear",
+        description:
+          error instanceof Error ? error.message : "Erro desconhecido",
+        variant: "destructive",
+      });
+    } finally {
+      setIsRenaming(false);
+    }
+  }, [renameValue, selectedConversation]);
 
   // Salvar alterações do contato
   const handleSaveContact = useCallback(async () => {
@@ -1713,7 +1885,7 @@ export default function Atendimento() {
                     <div className="flex items-start gap-3">
                       <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex items-center justify-center flex-shrink-0">
                         <span className="text-sm font-medium text-primary-foreground">
-                          {conv.contactName
+                          {getDisplayTitle(conv.customTitle, conv.contactName)
                             .split(" ")
                             .map((n) => n[0])
                             .join("")
@@ -1723,7 +1895,7 @@ export default function Atendimento() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <p className="font-medium text-sm text-foreground truncate">
-                            {conv.contactName}
+                            {getDisplayTitle(conv.customTitle, conv.contactName)}
                           </p>
                           <span className="text-xs text-muted-foreground">
                             {formatChatListTime(conv.lastMessageTime)}
@@ -1760,7 +1932,10 @@ export default function Atendimento() {
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex items-center justify-center">
                     <span className="text-sm font-medium text-primary-foreground">
-                      {selectedConversation.contactName
+                      {getDisplayTitle(
+                        selectedConversation.customTitle,
+                        selectedConversation.contactName,
+                      )
                         .split(" ")
                         .map((n) => n[0])
                         .join("")
@@ -1769,12 +1944,39 @@ export default function Atendimento() {
                   </div>
                   <div>
                     <p className="font-medium text-foreground">
-                      {selectedConversation.contactName}
+                      {getDisplayTitle(
+                        selectedConversation.customTitle,
+                        selectedConversation.contactName,
+                      )}
                     </p>
-                    <p className="text-xs text-muted-foreground">
-                      {selectedConversation.contactPhone}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs text-muted-foreground">
+                        {selectedConversation.contactPhone}
+                      </p>
+                      {typingDisplay && (
+                        <p className="text-xs text-primary italic animate-pulse">
+                          • {typingDisplay}
+                        </p>
+                      )}
+                    </div>
                   </div>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={openRenameTitle}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Renomear título do cliente/grupo
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -1912,6 +2114,55 @@ export default function Atendimento() {
                 </div>
               </div>
 
+              {/* SHARED INBOX – Modal de Renomear Título (cliente/grupo) */}
+              <Dialog open={isRenameOpen} onOpenChange={setIsRenameOpen}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Renomear cliente/grupo</DialogTitle>
+                    <DialogDescription>
+                      O título será aplicado no Shared Inbox e travado contra
+                      sobrescritas automáticas da Evolution API.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-2 py-2">
+                    <Label htmlFor="rename-title">Nome do Cliente/Grupo</Label>
+                    <Input
+                      id="rename-title"
+                      placeholder="Ex.: Loja Central — Maria"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !isRenaming) handleSaveRename();
+                      }}
+                      autoFocus
+                      maxLength={120}
+                    />
+                  </div>
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsRenameOpen(false)}
+                      disabled={isRenaming}
+                    >
+                      Cancelar
+                    </Button>
+                    <Button onClick={handleSaveRename} disabled={isRenaming}>
+                      {isRenaming ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Salvando...
+                        </>
+                      ) : (
+                        <>
+                          <Check className="mr-2 h-4 w-4" />
+                          Salvar
+                        </>
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
               {/* Modal de Edição de Contato */}
               <Dialog
                 open={isEditContactOpen}
@@ -2037,6 +2288,20 @@ export default function Atendimento() {
                                 : "bg-primary text-primary-foreground",
                             )}
                           >
+                            {/* SHARED INBOX – Autoria do operador (Quem do time enviou) */}
+                            {item.msg.sender === "operator" &&
+                              item.msg.userName && (
+                                <p className="text-[11px] font-semibold mb-1 opacity-90">
+                                  {item.msg.userName}
+                                </p>
+                              )}
+                            {/* SHARED INBOX – Participante do grupo (quem falou) */}
+                            {item.msg.sender === "contact" &&
+                              item.msg.participantName && (
+                                <p className="text-[11px] font-semibold mb-1 text-primary">
+                                  {item.msg.participantName}
+                                </p>
+                              )}
                             {/* Renderizar mídia baseado no messageType */}
                             {item.msg.messageType === "image" &&
                               item.msg.mediaUrl ? (
@@ -2180,7 +2445,18 @@ export default function Atendimento() {
                   <Input
                     placeholder="Digite sua mensagem..."
                     value={message}
-                    onChange={(e) => setMessage(e.target.value)}
+                    onChange={(e) => {
+                      setMessage(e.target.value);
+                      emitTyping(selectedConversation?.contactPhone);
+                    }}
+                    onBlur={() => {
+                      if (selectedConversation?.contactPhone) {
+                        realtimeSocket.sendTyping(
+                          selectedConversation.contactPhone,
+                          false,
+                        );
+                      }
+                    }}
                     onKeyDown={(e) =>
                       e.key === "Enter" && !e.shiftKey && handleSendMessage()
                     }

@@ -429,8 +429,27 @@ export interface Contact {
   contract?: string;
   isCPC?: boolean;
   lastCPCAt?: string;
+  isNameManual?: boolean;
+  /** Título personalizado (Shared Inbox). Prioridade > name. */
+  customTitle?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Resolve o nome de exibição de um chat (Shared Inbox).
+ * Regra: customTitle > contactName/name > "Desconhecido".
+ * Use sempre que precisar mostrar o nome do contato/grupo na UI.
+ */
+export function getDisplayTitle(
+  customTitle?: string | null,
+  contactName?: string | null
+): string {
+  const c = (customTitle ?? '').trim();
+  if (c) return c;
+  const n = (contactName ?? '').trim();
+  if (n) return n;
+  return 'Desconhecido';
 }
 
 export interface CreateContactData {
@@ -479,6 +498,20 @@ export const contactsService = {
       method: 'PATCH',
       body: JSON.stringify(data),
     });
+  },
+
+  /**
+   * Renomeia manualmente o título do contato/grupo (Shared Inbox).
+   * Seta customTitle e isNameManual=true no backend.
+   */
+  rename: async (phone: string, customTitle: string): Promise<Contact> => {
+    return apiRequest<Contact>(
+      `/contacts/rename/${encodeURIComponent(phone)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ customTitle }),
+      }
+    );
   },
 
   delete: async (id: number): Promise<void> => {
@@ -569,6 +602,9 @@ export interface Conversation {
   contactName: string;
   contactPhone: string;
   segment: number | null;
+  /** ID do operador que enviou (quando sender = 'operator') */
+  userId?: number | null;
+  /** Nome do operador que enviou (autoria) */
   userName: string | null;
   userLine: number | null;
   message: string;
@@ -577,6 +613,16 @@ export interface Conversation {
   tabulation: number | null;
   messageType: 'text' | 'image' | 'video' | 'audio' | 'document';
   mediaUrl: string | null;
+  /** True se a mensagem veio de um grupo WhatsApp (@g.us) */
+  isGroup?: boolean;
+  /** ID do grupo (remoteJid @g.us), se aplicável */
+  groupId?: string | null;
+  /** Nome do grupo capturado pela Evolution API */
+  groupName?: string | null;
+  /** Nome do participante dentro do grupo (quem realmente falou) */
+  participantName?: string | null;
+  /** Título customizado herdado do Contact (cache opcional) */
+  customTitle?: string | null;
   createdAt: string;
 }
 

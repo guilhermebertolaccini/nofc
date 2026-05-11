@@ -14,6 +14,8 @@ class RealtimeWebSocket {
   private currentToken: string | null = null;
   private isConnecting: boolean = false;
   private connectPromise: Promise<void> | null = null;
+  /** Sala atualmente "abertas" pelo usuário (1 conversa por vez no SaaS) */
+  private currentConversationRoom: string | null = null;
 
   connect(token: string): Promise<void> {
     // Se já está conectado com o mesmo token, apenas resolver
@@ -74,6 +76,12 @@ class RealtimeWebSocket {
         this.socket.on('connect', () => {
           this.isConnecting = false;
           console.log('[Socket.IO] Connected');
+          // Reentrar na sala da conversa após reconexão (resiliência)
+          if (this.currentConversationRoom) {
+            this.socket?.emit('join-conversation', {
+              contactPhone: this.currentConversationRoom,
+            });
+          }
           this.connectionHandlers.forEach(handler => handler());
           resolve();
         });
@@ -203,6 +211,38 @@ class RealtimeWebSocket {
     this.send(event, data);
   }
 
+  /**
+   * SHARED INBOX – Entrar na sala da conversa.
+   * Garante que o operador receba 'new_message' e 'user-typing' apenas
+   * dos clientes/grupos que ele tem aberto.
+   * Se já estiver em outra sala, sai dela antes de entrar na nova.
+   */
+  joinConversation(contactPhone: string) {
+    if (!contactPhone) return;
+    if (this.currentConversationRoom && this.currentConversationRoom !== contactPhone) {
+      this.send('leave-conversation', { contactPhone: this.currentConversationRoom });
+    }
+    this.currentConversationRoom = contactPhone;
+    this.send('join-conversation', { contactPhone });
+  }
+
+  /** Sai da sala da conversa (ao fechar/trocar o chat). */
+  leaveConversation(contactPhone?: string) {
+    const target = contactPhone ?? this.currentConversationRoom;
+    if (target) {
+      this.send('leave-conversation', { contactPhone: target });
+    }
+    if (!contactPhone || contactPhone === this.currentConversationRoom) {
+      this.currentConversationRoom = null;
+    }
+  }
+
+  /** Envia evento de digitação para a sala da conversa (com debounce no caller). */
+  sendTyping(contactPhone: string, typing: boolean) {
+    if (!contactPhone) return;
+    this.send('typing', { contactPhone, typing });
+  }
+
   get isConnected(): boolean {
     return this.socket?.connected || false;
   }
@@ -215,6 +255,7 @@ export const realtimeSocket = new RealtimeWebSocket();
 export const WS_EVENTS = {
   NEW_CONVERSATION: 'new_conversation',
   NEW_MESSAGE: 'new_message',
+  MESSAGE_SENT: 'message-sent',
   CONVERSATION_UPDATED: 'conversation_updated',
   OPERATOR_STATUS: 'operator_status',
   METRICS_UPDATE: 'metrics_update',
@@ -222,6 +263,7 @@ export const WS_EVENTS = {
   LINE_BANNED: 'line-banned',
   LINE_ASSIGNED: 'line-assigned',
   MESSAGE_ERROR: 'message-error',
+  USER_TYPING: 'user-typing',
 } as const;
 
 export type WSEventType = typeof WS_EVENTS[keyof typeof WS_EVENTS];

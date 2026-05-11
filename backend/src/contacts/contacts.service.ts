@@ -2,6 +2,23 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
+import { RenameContactDto } from './dto/rename-contact.dto';
+
+/**
+ * Helper de exibição (Shared Inbox).
+ * Prioridade estrita: customTitle > contactName/name (WhatsApp) > "Desconhecido".
+ * Use no backend sempre que precisar montar o nome de exibição em respostas.
+ */
+export function resolveDisplayTitle(
+  customTitle?: string | null,
+  contactName?: string | null,
+): string {
+  const trimmedCustom = (customTitle ?? '').trim();
+  if (trimmedCustom) return trimmedCustom;
+  const trimmedName = (contactName ?? '').trim();
+  if (trimmedName) return trimmedName;
+  return 'Desconhecido';
+}
 
 @Injectable()
 export class ContactsService {
@@ -126,5 +143,48 @@ export class ContactsService {
     return this.prisma.contact.delete({
       where: { id },
     });
+  }
+
+  /**
+   * Renomeia manualmente um contato/grupo (Shared Inbox de Número Único).
+   *
+   * - Cria o contato se ele ainda não existir (caso comum: 1ª mensagem de um
+   *   grupo recém-aberto pode chegar antes de qualquer CRUD).
+   * - Persiste `customTitle` e marca `isNameManual = true` para travar
+   *   sobrescrita automática vinda da Evolution API / webhook.
+   * - Propaga o título para `Conversation.contactName` de TODAS as conversas
+   *   daquele telefone, garantindo que o histórico exiba o novo nome.
+   */
+  async rename(phone: string, dto: RenameContactDto) {
+    const customTitle = dto.customTitle.trim();
+    if (!customTitle) {
+      throw new NotFoundException(`Título inválido`);
+    }
+
+    const existing = await this.prisma.contact.findFirst({ where: { phone } });
+
+    const contact = existing
+      ? await this.prisma.contact.update({
+          where: { id: existing.id },
+          data: { customTitle, isNameManual: true },
+        })
+      : await this.prisma.contact.create({
+          data: {
+            phone,
+            name: customTitle,
+            customTitle,
+            isNameManual: true,
+          },
+        });
+
+    await this.prisma.conversation.updateMany({
+      where: { contactPhone: phone },
+      data: { contactName: customTitle },
+    });
+
+    return {
+      ...contact,
+      displayTitle: resolveDisplayTitle(contact.customTitle, contact.name),
+    };
   }
 }

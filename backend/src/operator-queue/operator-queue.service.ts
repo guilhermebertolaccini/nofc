@@ -241,6 +241,47 @@ export class OperatorQueueService {
    * Processa fila: verifica entradas expiradas e tenta atribuir linhas
    */
   async processQueue(): Promise<void> {
+    /* ====================================================================
+     * ATENÇÃO: Execução desativada (curto-circuito intencional).
+     * --------------------------------------------------------------------
+     * Motivo arquitetural:
+     *   O sistema foi migrado para o modelo Shared Inbox de Número Único,
+     *   onde sharedLineMode = true é permanente (lock em
+     *   ControlPanelService). Não existem mais limites de operadores por
+     *   linha (maxOperatorsPerLine) nem necessidade de enfileirar
+     *   operadores esperando por uma linha. Toda esta lógica de fila
+     *   tornou-se OBSOLETA.
+     *
+     * Motivo de segurança (CRÍTICO):
+     *   Este método contém um bug grave abaixo: um
+     *     `await this.prisma.operatorQueue.deleteMany({});`
+     *   é executado SEM cláusula `where` dentro do loop de expiração, o
+     *   que apagaria TODOS os registros da tabela `OperatorQueue` a cada
+     *   execução do cron. Este early return BLINDA o banco de dados
+     *   contra esse comportamento destrutivo enquanto a remoção definitiva
+     *   da feature não é feita.
+     *
+     * O que NÃO foi removido:
+     *   - Assinatura e nome do método (preservados para não quebrar crons,
+     *     o WebsocketGateway e qualquer outro caller que invoque
+     *     processQueue()).
+     *   - Demais métodos do service (addToQueue, removeFromQueue,
+     *     getQueuePosition, getQueue, clearQueue) — alguns ainda são
+     *     usados por endpoints administrativos legados, e seu comportamento
+     *     é seguro (têm `where` apropriado).
+     *
+     * Próximo passo (futuro):
+     *   Quando o time confirmar que nada mais depende deste fluxo, remover
+     *   o cron que dispara processQueue, deletar o restante do corpo deste
+     *   método (ou o service inteiro) e o model OperatorQueue do Prisma.
+     * ==================================================================== */
+    return;
+
+    // ---------------------------------------------------------------------
+    // CÓDIGO ORIGINAL (INALCANÇÁVEL) — preservado para histórico.
+    // Avisos do compilador sobre "unreachable code" abaixo são esperados.
+    // NÃO REMOVER sem aprovação do time de arquitetura.
+    // ---------------------------------------------------------------------
     try {
       // Expirar entradas antigas
       // Expirar entradas antigas (loop para evitar violação de unique constraint)
@@ -252,8 +293,16 @@ export class OperatorQueueService {
       });
 
       for (const item of expiredItems) {
-        // Remover registro 'expired' anterior
+        // ⚠️ BUG NEUTRALIZADO (defesa em profundidade):
+        // A chamada original era `prisma.operatorQueue.deleteMany({})` SEM
+        // cláusula `where` — apagaria a tabela inteira. Substituída pela
+        // forma correta: deleta apenas os registros 'expired' deste
+        // usuário (mesma intenção da chamada equivalente em
+        // assignLineToQueuedOperator). Mesmo assim, este bloco SÓ
+        // executa se alguém remover o early return no topo do método —
+        // o que NÃO deve acontecer (ver comentário no topo).
         await this.prisma.operatorQueue.deleteMany({
+          where: { userId: item.userId, status: 'expired' },
         });
 
         // Marcar atual como expired

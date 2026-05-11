@@ -3,6 +3,20 @@ import { PrismaService } from '../prisma.service';
 import { UpdateControlPanelDto } from './dto/control-panel.dto';
 import { CacheService } from '../cache/cache.service';
 
+/**
+ * Lock arquitetural: Shared Inbox de Número Único.
+ *
+ * Esta constante FORÇA sharedLineMode = true em todas as leituras do painel de
+ * controle. Mantém a lógica antiga (filas/limites por linha) totalmente
+ * neutralizada enquanto o produto operar no modelo de número único.
+ *
+ * Caso futuramente queira voltar a múltiplas linhas pulverizadas, basta
+ * trocar para `false` (ou ler dinamicamente do DB) — o restante do
+ * sistema já respeita essa flag (LineAssignmentService, OperatorQueueService,
+ * WebsocketGateway, etc.).
+ */
+const SHARED_INBOX_LOCK = true;
+
 @Injectable()
 export class ControlPanelService {
   constructor(
@@ -43,7 +57,8 @@ export class ControlPanelService {
             autoMessageHours: 24,
             autoMessageText: null,
             autoMessageMaxAttempts: 1,
-            sharedLineMode: false, // Modo compartilhado desativado por padrão
+            // Shared Inbox Lock — número único compartilhado
+            sharedLineMode: SHARED_INBOX_LOCK,
           };
         }
 
@@ -51,6 +66,8 @@ export class ControlPanelService {
           ...config,
           blockPhrases: config.blockPhrases ? JSON.parse(config.blockPhrases) : [],
           activeEvolutions: (config as any).activeEvolutions ? JSON.parse((config as any).activeEvolutions) : null,
+          // Shared Inbox Lock — sobrepõe valor persistido
+          sharedLineMode: SHARED_INBOX_LOCK,
         };
       },
       5 * 60 * 1000, // 5 minutos

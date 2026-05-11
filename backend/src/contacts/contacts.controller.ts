@@ -12,6 +12,7 @@ import {
 import { ContactsService } from "./contacts.service";
 import { CreateContactDto } from "./dto/create-contact.dto";
 import { UpdateContactDto } from "./dto/update-contact.dto";
+import { RenameContactDto } from "./dto/rename-contact.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { Roles } from "../common/decorators/roles.decorator";
@@ -59,6 +60,20 @@ export class ContactsController {
     @Body() updateContactDto: UpdateContactDto
   ) {
     return this.contactsService.updateByPhone(phone, updateContactDto);
+  }
+
+  /**
+   * PATCH /contacts/rename/:phone
+   * Renomeia manualmente o contato/grupo do Shared Inbox.
+   * Disponível para todos os papéis com acesso ao atendimento.
+   */
+  @Patch("rename/:phone")
+  @Roles(Role.admin, Role.supervisor, Role.operator, Role.digital)
+  rename(
+    @Param("phone") phone: string,
+    @Body() dto: RenameContactDto
+  ) {
+    return this.contactsService.rename(phone, dto);
   }
 
   @Patch(":id")

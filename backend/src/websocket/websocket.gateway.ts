@@ -1915,6 +1915,15 @@ export class WebsocketGateway
       );
       client.emit("message-sent", { message: conversation });
 
+      // SHARED INBOX: Emitir new_message para a sala da conversa (exceto o
+      // remetente, que já recebeu via 'message-sent'). Garante que qualquer
+      // outro operador que esteja com o mesmo chat aberto veja a mensagem
+      // instantaneamente, sem depender de vínculo à linha.
+      if (data.contactPhone) {
+        const room = this.buildConversationRoom(data.contactPhone);
+        client.to(room).emit("new_message", { message: conversation });
+      }
+
       // SINCRONIZAÇÃO: Emitir para TODOS os outros operadores da mesma linha (modo compartilhado)
       // Isso garante que quando X envia mensagem, Y também vê em tempo real
       if (currentLineId) {
@@ -2305,15 +2314,74 @@ export class WebsocketGateway
     };
   }
 
+  // =====================================================================
+  // SHARED INBOX – Rooms por conversa (Socket.IO)
+  // ---------------------------------------------------------------------
+  // Cada conversa (contactPhone) corresponde a uma sala "conv:<phone>".
+  // Operadores entram na sala ao abrir o chat e saem ao trocar/fechar.
+  // Eventos roteados por sala (em vez de broadcast global):
+  //   - user-typing  (apenas para quem está no mesmo chat)
+  //   - new_message  (sync instantâneo entre operadores no mesmo chat)
+  // =====================================================================
+
+  private buildConversationRoom(contactPhone: string): string {
+    return `conv:${(contactPhone || "").trim()}`;
+  }
+
+  @SubscribeMessage("join-conversation")
+  async handleJoinConversation(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { contactPhone: string },
+  ) {
+    if (!client.data?.user || !data?.contactPhone) return;
+    const room = this.buildConversationRoom(data.contactPhone);
+
+    // Sair de qualquer sala 'conv:*' anterior para garantir que cada socket
+    // esteja em no máximo UMA conversa por vez (estado coerente do operador).
+    for (const r of client.rooms) {
+      if (r !== client.id && r.startsWith("conv:") && r !== room) {
+        client.leave(r);
+      }
+    }
+
+    client.join(room);
+    return { joined: room };
+  }
+
+  @SubscribeMessage("leave-conversation")
+  async handleLeaveConversation(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { contactPhone: string },
+  ) {
+    if (!client.data?.user || !data?.contactPhone) return;
+    const room = this.buildConversationRoom(data.contactPhone);
+    client.leave(room);
+    // Avisa quem ficou na sala que este usuário parou de digitar
+    client.to(room).emit("user-typing", {
+      contactPhone: data.contactPhone,
+      userId: client.data.user.id,
+      userName: client.data.user.name,
+      typing: false,
+    });
+    return { left: room };
+  }
+
   @SubscribeMessage("typing")
   async handleTyping(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { contactPhone: string; typing: boolean },
   ) {
-    // Emitir evento de digitação para outros usuários
-    client.broadcast.emit("user-typing", {
+    if (!client.data?.user || !data?.contactPhone) return;
+    const room = this.buildConversationRoom(data.contactPhone);
+
+    // Broadcast restrito à sala da conversa (exceto o próprio remetente).
+    // Inclui identificação do operador para o front exibir
+    // "Usuário X está digitando..."
+    client.to(room).emit("user-typing", {
       contactPhone: data.contactPhone,
-      typing: data.typing,
+      userId: client.data.user.id,
+      userName: client.data.user.name,
+      typing: !!data.typing,
     });
   }
 
@@ -2721,6 +2789,17 @@ export class WebsocketGateway
         userLine: conversation.userLine,
       },
     );
+
+    // ---------------------------------------------------------------
+    // SHARED INBOX – Emissão para a sala da conversa
+    // Garante sync instantâneo entre qualquer operador que esteja com
+    // o mesmo chat aberto (Operador A envia → Operador B vê na hora).
+    // É o caminho principal no modo de número único.
+    // ---------------------------------------------------------------
+    if (conversation?.contactPhone) {
+      const room = this.buildConversationRoom(conversation.contactPhone);
+      this.server.to(room).emit("new_message", { message: conversation });
+    }
 
     // Verificar se o modo compartilhado está ativo
     const controlPanel = await this.controlPanelService.findOne();

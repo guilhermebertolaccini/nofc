@@ -16,6 +16,24 @@ export class ConversationsService {
     });
   }
 
+  /**
+   * Lista conversas aplicando a Prioridade de Exibição Estrita do
+   * Shared Inbox de Número Único.
+   *
+   * Prioridade do `contactName` retornado ao frontend:
+   *   1. Contact.customTitle  (manual, travado contra Evolution)
+   *   2. Contact.name         (nome real do contato)
+   *   3. Conversation.contactName (snapshot gravado pelo webhook)
+   *   4. "Desconhecido"
+   *
+   * Observação técnica: o schema NÃO declara uma relação Prisma entre
+   * Conversation.contactPhone e Contact.phone (criar essa FK quebraria
+   * conversations inbound de grupos/leads cujo Contact ainda não existe).
+   * Por isso, em vez de `include`, fazemos um "include lógico": uma única
+   * query batch em Contact e merge em memória. O resultado para o frontend
+   * é equivalente — payload limpo, sem objeto relacional aninhado, com
+   * `contactName` já resolvido e `customTitle` exposto no topo.
+   */
   async findAll(filters?: any) {
     // Remover campos inválidos que não existem no schema
     const { search, ...validFilters } = filters || {};
@@ -39,11 +57,58 @@ export class ConversationsService {
       JSON.stringify(where),
     );
 
-    return this.prisma.conversation.findMany({
+    const conversations = await this.prisma.conversation.findMany({
       where,
       orderBy: {
         datetime: "desc",
       },
+    });
+
+    if (conversations.length === 0) {
+      return [];
+    }
+
+    // Batch lookup: 1 query única buscando todos os contatos envolvidos
+    const uniquePhones = Array.from(
+      new Set(
+        conversations
+          .map((c) => c.contactPhone)
+          .filter((p): p is string => !!p),
+      ),
+    );
+
+    const contacts = await this.prisma.contact.findMany({
+      where: { phone: { in: uniquePhones } },
+      select: {
+        phone: true,
+        customTitle: true,
+        name: true,
+        isNameManual: true,
+      },
+    });
+
+    const contactsByPhone = new Map(contacts.map((c) => [c.phone, c]));
+
+    return conversations.map((conv) => {
+      const contact = contactsByPhone.get(conv.contactPhone);
+
+      const contactCustomTitle = contact?.customTitle?.trim() || null;
+      const contactOriginalName = contact?.name?.trim() || null;
+      const snapshotName = conv.contactName?.trim() || null;
+
+      const displayTitle =
+        contactCustomTitle ||
+        contactOriginalName ||
+        snapshotName ||
+        "Desconhecido";
+
+      // Sobrescreve contactName com o título resolvido e expõe customTitle
+      // na raiz. Nenhum objeto relacional é vazado no payload REST.
+      return {
+        ...conv,
+        contactName: displayTitle,
+        customTitle: contactCustomTitle,
+      };
     });
   }
 

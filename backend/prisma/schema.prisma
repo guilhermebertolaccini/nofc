@@ -112,6 +112,7 @@ model Contact {
   isCPC        Boolean   @default(false) // Se true, contato foi marcado como CPC
   lastCPCAt    DateTime? // Última vez que foi marcado como CPC (para temporizador)
   isNameManual Boolean   @default(false) // Se true, nome foi definido manualmente pelo admin e não deve ser atualizado automaticamente
+  customTitle  String?   // Título personalizado de exibição (Shared Inbox). Prioridade: customTitle > name > "Desconhecido". Ao ser definido, isNameManual também é setado para true.
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
