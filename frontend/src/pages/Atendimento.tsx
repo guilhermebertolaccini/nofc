@@ -86,6 +86,31 @@ import {
 } from "@/components/ui/tooltip";
 import { useAuth } from "@/contexts/AuthContext";
 
+/**
+ * Resolve qualquer `mediaUrl` para uma URL utilizável pelo navegador.
+ *
+ * Regras (em ordem de prioridade):
+ *   1. URL absoluta (http/https) → usa como veio.
+ *   2. `data:` URI (base64 inline) → usa como veio.
+ *   3. Path relativo (com ou sem `/` inicial) → concatena com
+ *      `VITE_API_URL` (ou fallback `http://localhost:3000`).
+ *   4. Valor falsy → retorna `null` para o caller renderizar fallback.
+ *
+ * Por que isso resolve o Problema 1 (imagem quebrada no F5):
+ *   Antes, cada `<img>` repetia inline o ternário
+ *   `url.startsWith("http") ? url : ${API_BASE_URL}${url}` — qualquer
+ *   discrepância (URL sem `/` inicial, `mediaUrl` undefined, etc) gerava
+ *   `src` malformado. Centralizando aqui, garantimos que tempo-real e
+ *   refresh resolvam EXATAMENTE para a mesma URL final.
+ */
+function resolveMediaUrl(url?: string | null): string | null {
+  if (!url) return null;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  if (url.startsWith("data:")) return url;
+  const normalized = url.startsWith("/") ? url : `/${url}`;
+  return `${API_BASE_URL}${normalized}`;
+}
+
 interface ConversationGroup {
   contactPhone: string;
   contactName: string;
@@ -1157,9 +1182,10 @@ export default function Atendimento() {
 
         const data = await response.json();
         const messageType = getMessageTypeFromMime(data.mimeType);
-        const mediaUrl = data.mediaUrl.startsWith("http")
-          ? data.mediaUrl
-          : `${API_BASE_URL}${data.mediaUrl}`;
+        // Normaliza para URL absoluta antes de enviar via WebSocket —
+        // assim a mensagem persiste no banco com URL pronta para uso e o
+        // operador na outra ponta consegue renderizar sem novos prefixos.
+        const mediaUrl = resolveMediaUrl(data.mediaUrl) ?? data.mediaUrl;
 
         // Enviar mensagem com mídia via WebSocket
         if (isRealtimeConnected) {
@@ -2422,92 +2448,150 @@ export default function Atendimento() {
                                   {item.msg.participantName}
                                 </p>
                               )}
-                            {/* Renderizar mídia baseado no messageType */}
-                            {item.msg.messageType === "image" &&
-                              item.msg.mediaUrl ? (
-                              <div className="mb-2">
-                                <img
-                                  src={
-                                    item.msg.mediaUrl.startsWith("http")
-                                      ? item.msg.mediaUrl
-                                      : `${API_BASE_URL}${item.msg.mediaUrl}`
-                                  }
-                                  alt="Imagem"
-                                  className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-                                  style={{ maxHeight: "300px" }}
-                                  onClick={() =>
-                                    window.open(
-                                      item.msg.mediaUrl!.startsWith("http")
-                                        ? item.msg.mediaUrl!
-                                        : `${API_BASE_URL}${item.msg.mediaUrl}`,
-                                      "_blank",
-                                    )
-                                  }
-                                />
-                                {item.msg.message &&
-                                  !item.msg.message.includes("recebida") && (
-                                    <p className="text-sm mt-2">
-                                      {item.msg.message}
-                                    </p>
-                                  )}
-                              </div>
-                            ) : item.msg.messageType === "audio" &&
-                              item.msg.mediaUrl ? (
-                              <div className="mb-2">
-                                <audio
-                                  controls
-                                  className="max-w-full"
-                                  src={
-                                    item.msg.mediaUrl.startsWith("http")
-                                      ? item.msg.mediaUrl
-                                      : `${API_BASE_URL}${item.msg.mediaUrl}`
-                                  }
-                                >
-                                  Seu navegador não suporta áudio.
-                                </audio>
-                              </div>
-                            ) : item.msg.messageType === "video" &&
-                              item.msg.mediaUrl ? (
-                              <div className="mb-2">
-                                <video
-                                  controls
-                                  className="max-w-full rounded-lg"
-                                  style={{ maxHeight: "300px" }}
-                                  src={
-                                    item.msg.mediaUrl.startsWith("http")
-                                      ? item.msg.mediaUrl
-                                      : `${API_BASE_URL}${item.msg.mediaUrl}`
-                                  }
-                                >
-                                  Seu navegador não suporta vídeo.
-                                </video>
-                                {item.msg.message &&
-                                  !item.msg.message.includes("recebido") && (
-                                    <p className="text-sm mt-2">
-                                      {item.msg.message}
-                                    </p>
-                                  )}
-                              </div>
-                            ) : item.msg.messageType === "document" &&
-                              item.msg.mediaUrl ? (
-                              <div className="mb-2">
-                                <a
-                                  href={
-                                    item.msg.mediaUrl.startsWith("http")
-                                      ? item.msg.mediaUrl
-                                      : `${API_BASE_URL}${item.msg.mediaUrl}`
-                                  }
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center gap-2 text-sm underline hover:no-underline"
-                                >
-                                  <FileText className="h-4 w-4" />
-                                  {item.msg.message || "Documento"}
-                                </a>
-                              </div>
-                            ) : (
-                              <p className="text-sm">{item.msg.message}</p>
-                            )}
+                            {/* Renderizar mídia baseado no messageType.
+                                Todas as URLs passam por resolveMediaUrl,
+                                que devolve absoluta/relativa+API_BASE_URL/
+                                data:URI conforme o caso — eliminando o
+                                bug de "imagem quebrada no F5".
+                                Stickers usam <img> em tamanho reduzido. */}
+                            {(() => {
+                              const resolvedUrl = resolveMediaUrl(
+                                item.msg.mediaUrl,
+                              );
+                              const onImgError = (
+                                e: React.SyntheticEvent<HTMLImageElement>,
+                              ) => {
+                                // Fallback gracioso: se a URL não carregar,
+                                // mostramos o balão semi-transparente em vez de
+                                // um ícone de "imagem quebrada".
+                                console.warn(
+                                  "[Atendimento] Falha ao carregar mídia:",
+                                  (e.currentTarget as HTMLImageElement).src,
+                                );
+                                (e.currentTarget as HTMLImageElement).style.opacity =
+                                  "0.25";
+                              };
+
+                              if (
+                                item.msg.messageType === "image" &&
+                                resolvedUrl
+                              ) {
+                                return (
+                                  <div className="mb-2">
+                                    <img
+                                      src={resolvedUrl}
+                                      alt="Imagem"
+                                      className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+                                      style={{ maxHeight: "300px" }}
+                                      onClick={() =>
+                                        window.open(resolvedUrl, "_blank")
+                                      }
+                                      onError={onImgError}
+                                    />
+                                    {item.msg.message &&
+                                      !item.msg.message.includes("recebida") && (
+                                        <p className="text-sm mt-2">
+                                          {item.msg.message}
+                                        </p>
+                                      )}
+                                  </div>
+                                );
+                              }
+
+                              if (
+                                item.msg.messageType === "sticker" &&
+                                resolvedUrl
+                              ) {
+                                // Figurinhas: <img> com max-width menor para
+                                // preservar a estética de sticker do WhatsApp.
+                                // Sem caption (stickers não têm legenda) e sem
+                                // fundo de balão pesado.
+                                return (
+                                  <div className="mb-1">
+                                    <img
+                                      src={resolvedUrl}
+                                      alt="Figurinha"
+                                      className="rounded-md cursor-pointer hover:opacity-90 transition-opacity"
+                                      style={{
+                                        maxWidth: "160px",
+                                        maxHeight: "160px",
+                                      }}
+                                      onClick={() =>
+                                        window.open(resolvedUrl, "_blank")
+                                      }
+                                      onError={onImgError}
+                                    />
+                                  </div>
+                                );
+                              }
+
+                              if (
+                                item.msg.messageType === "audio" &&
+                                resolvedUrl
+                              ) {
+                                return (
+                                  <div className="mb-2">
+                                    <audio
+                                      controls
+                                      className="max-w-full"
+                                      src={resolvedUrl}
+                                    >
+                                      Seu navegador não suporta áudio.
+                                    </audio>
+                                  </div>
+                                );
+                              }
+
+                              if (
+                                item.msg.messageType === "video" &&
+                                resolvedUrl
+                              ) {
+                                return (
+                                  <div className="mb-2">
+                                    <video
+                                      controls
+                                      className="max-w-full rounded-lg"
+                                      style={{ maxHeight: "300px" }}
+                                      src={resolvedUrl}
+                                    >
+                                      Seu navegador não suporta vídeo.
+                                    </video>
+                                    {item.msg.message &&
+                                      !item.msg.message.includes("recebido") && (
+                                        <p className="text-sm mt-2">
+                                          {item.msg.message}
+                                        </p>
+                                      )}
+                                  </div>
+                                );
+                              }
+
+                              if (
+                                item.msg.messageType === "document" &&
+                                resolvedUrl
+                              ) {
+                                return (
+                                  <div className="mb-2">
+                                    <a
+                                      href={resolvedUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="flex items-center gap-2 text-sm underline hover:no-underline"
+                                    >
+                                      <FileText className="h-4 w-4" />
+                                      {item.msg.message || "Documento"}
+                                    </a>
+                                  </div>
+                                );
+                              }
+
+                              // Fallback: texto puro (inclui mensagens sem mídia
+                              // e casos em que `resolvedUrl` é null porque o
+                              // backend descartou uma URL CDN inválida).
+                              return (
+                                <p className="text-sm">{item.msg.message}</p>
+                              );
+                            })()}
                             <p
                               className={cn(
                                 "text-xs mt-1",

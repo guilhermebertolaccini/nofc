@@ -123,6 +123,8 @@ export class WebhooksService {
         console.log("📱 Mensagem de:", from, "| fromMe:", message.key.fromMe);
 
         // Extrair texto da mensagem
+        // Stickers nunca têm caption — usamos "Figurinha" como rótulo
+        // (o frontend renderiza a imagem em vez do texto quando há mediaUrl).
         const messageText =
           message.message?.conversation ||
           message.message?.extendedTextMessage?.text ||
@@ -130,6 +132,7 @@ export class WebhooksService {
           message.message?.videoMessage?.caption ||
           message.message?.documentMessage?.caption ||
           (message.message?.imageMessage ? "Imagem recebida" : undefined) ||
+          (message.message?.stickerMessage ? "Figurinha" : undefined) ||
           (message.message?.videoMessage ? "Vídeo recebido" : undefined) ||
           (message.message?.audioMessage ? "Áudio recebido" : undefined) ||
           (message.message?.documentMessage
@@ -229,7 +232,7 @@ export class WebhooksService {
               );
 
               if (localFileName) {
-                mediaUrl = `/media/${localFileName}`;
+                mediaUrl = this.buildMediaUrl(localFileName);
                 console.log("📥 Mídia Base64 salva localmente:", mediaUrl);
               }
             } catch (error) {
@@ -250,11 +253,19 @@ export class WebhooksService {
                   );
 
                 if (localFileName) {
-                  mediaUrl = `/media/${localFileName}`;
+                  mediaUrl = this.buildMediaUrl(localFileName);
                   console.log("📥 Mídia URL salva localmente:", mediaUrl);
+                } else {
+                  // Download falhou — não persistir URL CDN encriptada
+                  // (ela expira e o navegador não consegue descriptografar).
+                  console.warn(
+                    "⚠️ [Webhook] Download falhou; descartando mediaUrl CDN para evitar imagem quebrada no refresh.",
+                  );
+                  mediaUrl = undefined;
                 }
               } catch (error) {
                 console.error("❌ Erro ao baixar mídia:", error.message);
+                mediaUrl = undefined;
               }
             } else {
               console.warn("⚠️ [Webhook] Nenhuma URL de mídia encontrada");
@@ -275,11 +286,17 @@ export class WebhooksService {
               );
 
             if (localFileName) {
-              mediaUrl = `/media/${localFileName}`;
+              mediaUrl = this.buildMediaUrl(localFileName);
               console.log("📥 Mídia salva localmente:", mediaUrl);
+            } else {
+              console.warn(
+                "⚠️ [Webhook] Download falhou; descartando mediaUrl CDN.",
+              );
+              mediaUrl = undefined;
             }
           } catch (error) {
             console.error("❌ Erro ao baixar mídia:", error.message);
+            mediaUrl = undefined;
           }
         }
 
@@ -1379,6 +1396,10 @@ export class WebhooksService {
 
   private getMessageType(message: any): string {
     if (message?.imageMessage) return "image";
+    // Stickers (figurinhas) são tratados como uma categoria própria —
+    // pipeline de download é o mesmo de uma imagem, mas o frontend renderiza
+    // num tamanho menor para preservar a estética de figurinha.
+    if (message?.stickerMessage) return "sticker";
     if (message?.videoMessage) return "video";
     if (message?.audioMessage) return "audio";
     if (message?.documentMessage) return "document";
@@ -1387,10 +1408,30 @@ export class WebhooksService {
 
   private getMediaUrl(message: any): string | undefined {
     if (message?.imageMessage?.url) return message.imageMessage.url;
+    if (message?.stickerMessage?.url) return message.stickerMessage.url;
     if (message?.videoMessage?.url) return message.videoMessage.url;
     if (message?.audioMessage?.url) return message.audioMessage.url;
     if (message?.documentMessage?.url) return message.documentMessage.url;
     return undefined;
+  }
+
+  /**
+   * Constrói a URL pública de uma mídia salva localmente.
+   *
+   * Estratégia:
+   *   - Se `process.env.APP_URL` estiver definida, retorna URL ABSOLUTA
+   *     (`<APP_URL>/media/<file>`). Indicada em produção/deploys onde o
+   *     frontend pode ser servido em domínio diferente do backend.
+   *   - Caso contrário, retorna o caminho RELATIVO padronizado
+   *     (`/media/<file>`). O frontend então concatena com `VITE_API_URL`
+   *     ao renderizar (helper `resolveMediaUrl` em Atendimento.tsx).
+   *
+   * Em qualquer dos modos, o caminho é PADRONIZADO e nunca contém
+   * URLs CDN da WhatsApp (que requerem descriptografia e expiram).
+   */
+  private buildMediaUrl(fileName: string): string {
+    const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
+    return appUrl ? `${appUrl}/media/${fileName}` : `/media/${fileName}`;
   }
 
   private getExtension(messageType: string, mimetype?: string): string {
@@ -1418,8 +1459,12 @@ export class WebhooksService {
     message: any,
   ): { data: string; mimetype: string } | null {
     // Verificar cada tipo de mídia
+    // `stickerMessage` é incluído aqui para reaproveitar todo o pipeline
+    // de extração/persistência das imagens (mesmo cabeçalho base64 vindo
+    // da Evolution API; o mimetype default é image/webp).
     const mediaTypes = [
       "imageMessage",
+      "stickerMessage",
       "videoMessage",
       "audioMessage",
       "documentMessage",
@@ -1476,6 +1521,7 @@ export class WebhooksService {
   private getDefaultMimetype(messageType: string): string {
     const mimetypes = {
       imageMessage: "image/jpeg",
+      stickerMessage: "image/webp", // Figurinhas do WhatsApp são WebP animado/estático
       videoMessage: "video/mp4",
       audioMessage: "audio/ogg",
       documentMessage: "application/pdf",
