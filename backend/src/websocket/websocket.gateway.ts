@@ -118,13 +118,22 @@ export class WebsocketGateway
         data: { status: "Online" },
       });
 
-      // Log apenas para operadores (fluxo principal)
-      if (user.role === "operator") {
-        console.log(`✅ Operador ${user.name} conectado`);
-      }
+      const attendantRolesForLineSync = [
+        "operator",
+        "admin",
+        "supervisor",
+        "digital",
+      ] as const;
 
-      // Se for operador, verificar e sincronizar linha
-      if (user.role === "operator") {
+      const canSyncLineBinding = attendantRolesForLineSync.includes(
+        user.role as (typeof attendantRolesForLineSync)[number],
+      );
+
+      if (canSyncLineBinding) {
+        console.log(
+          `✅ [WebSocket] ${user.role} ${user.name} conectado (sincronização de linha ativa quando aplicável)`,
+        );
+
         // Se já tem linha no campo legacy, verificar se está na tabela LineOperator
         if (user.line) {
           const existingLink = await (
@@ -209,73 +218,78 @@ export class WebsocketGateway
         }
       }
 
-      // Enviar conversas ativas ao conectar (para operators e admins)
-      if (user.role === "operator" || user.role === "admin") {
-        let activeConversations;
+      // Prefetch de conversas ao conectar (alinhado ao GET /conversations/active)
+      const attendantRolesForPrefetch = [
+        "operator",
+        "admin",
+        "supervisor",
+        "digital",
+      ] as const;
 
-        if (user.role === "admin") {
-          // Admin vê TODAS as conversas ativas
+      if (
+        attendantRolesForPrefetch.includes(
+          user.role as (typeof attendantRolesForPrefetch)[number],
+        )
+      ) {
+        let activeConversations: any[];
+
+        let prefetchLineId = user.line as number | null;
+        if (!prefetchLineId) {
+          const loRow = await (this.prisma as any).lineOperator.findFirst({
+            where: { userId: user.id },
+            select: { lineId: true },
+          });
+          prefetchLineId = loRow?.lineId ?? null;
+        }
+
+        const prefetchGlobalCatalog =
+          (user.role === "admin" || user.role === "digital") &&
+          !prefetchLineId;
+
+        if (prefetchGlobalCatalog) {
           activeConversations = await this.prisma.conversation.findMany({
             where: { tabulation: null },
             orderBy: { datetime: "asc" },
           });
+        } else if (!prefetchLineId) {
+          console.log(
+            `📋 [WebSocket] ${user.role} ${user.name} sem linha — prefetch restrito ao próprio usuário`,
+          );
+          activeConversations =
+            await this.conversationsService.findActiveConversations(
+              undefined,
+              user.id,
+            );
         } else {
-          // Operador: buscar linha atual (pode estar em LineOperator ou no campo legacy)
-          let currentLineId = user.line;
-          if (!currentLineId) {
-            const lineOperator = await (
-              this.prisma as any
-            ).lineOperator.findFirst({
-              where: { userId: user.id },
-              select: { lineId: true },
-            });
-            currentLineId = lineOperator?.lineId || null;
-          }
+          const controlPanel = await this.controlPanelService.findOne();
+          const sharedLineMode = controlPanel?.sharedLineMode ?? false;
 
-          if (!currentLineId) {
-            // Se não tem linha, retornar apenas conversas do próprio operador
+          if (sharedLineMode) {
+            const lineOperators = await (
+              this.prisma as any
+            ).lineOperator.findMany({
+              where: { lineId: prefetchLineId },
+              select: { userId: true },
+            });
+
+            const userIds = lineOperators.map((lo) => lo.userId);
             console.log(
-              `📋 [WebSocket] Operador ${user.name} não tem linha - enviando apenas suas conversas`,
+              `📋 [WebSocket] [Shared Inbox] ${user.role} ${user.name} na linha ${prefetchLineId} — prefetch ${userIds.length} vínculo(s)`,
+            );
+
+            activeConversations =
+              await this.conversationsService.findActiveConversationsByUserIds(
+                userIds,
+              );
+          } else {
+            console.log(
+              `📋 [WebSocket] [Legado] ${user.role} ${user.name} — prefetch só próprias conversas`,
             );
             activeConversations =
               await this.conversationsService.findActiveConversations(
                 undefined,
                 user.id,
               );
-          } else {
-            // Verificar se modo compartilhado está ativo
-            const controlPanel = await this.controlPanelService.findOne();
-            const sharedLineMode = controlPanel?.sharedLineMode ?? false;
-
-            if (sharedLineMode) {
-              // MODO COMPARTILHADO ATIVO: Buscar conversas de TODOS os operadores da mesma linha
-              const lineOperators = await (
-                this.prisma as any
-              ).lineOperator.findMany({
-                where: { lineId: currentLineId },
-                select: { userId: true },
-              });
-
-              const userIds = lineOperators.map((lo) => lo.userId);
-              console.log(
-                `📋 [WebSocket] [MODO COMPARTILHADO] Operador ${user.name} está na linha ${currentLineId} com ${userIds.length} operador(es) - enviando conversas de todos`,
-              );
-
-              activeConversations =
-                await this.conversationsService.findActiveConversationsByUserIds(
-                  userIds,
-                );
-            } else {
-              // MODO NORMAL: Operador vê apenas suas próprias conversas
-              console.log(
-                `📋 [WebSocket] [MODO NORMAL] Operador ${user.name} está na linha ${currentLineId} - enviando apenas suas conversas`,
-              );
-              activeConversations =
-                await this.conversationsService.findActiveConversations(
-                  undefined,
-                  user.id,
-                );
-            }
           }
         }
 
@@ -558,14 +572,23 @@ export class WebsocketGateway
       }
     }
 
-    // Se operador não tem linha, tentar atribuir automaticamente via serviço centralizado
-    // Isso garante respeito a todas as regras de negócio (fila, prioridades, limites de operadores)
+    // Sem linha: apenas operadores entram na fila automática. Demais perfis devem ser
+    // vinculados manualmente à linha (Gestão de Usuários).
     if (!currentLineId) {
+      if (user.role !== "operator") {
+        console.warn(
+          `⛔ [WebSocket] Envio bloqueado: ${user.role} sem linha (userId=${user.id}).`,
+        );
+        return this.replyError(
+          client,
+          "Vincule este usuário a uma linha WhatsApp em Gestão de Usuários antes de enviar mensagens.",
+        );
+      }
+
       console.log(
         `🔄 [WebSocket] Operador sem linha ao tentar enviar. Solicitando nova linha via LineAssignmentService...`,
       );
 
-      // Tentar solicitar linha (respeitando fila e limites)
       const assignmentResult =
         await this.lineAssignmentService.requestLineForOperator(user.id);
 
@@ -580,18 +603,16 @@ export class WebsocketGateway
           `⏳ [WebSocket] Não foi possível atribuir linha automaticamente: ${assignmentResult.reason}`,
         );
 
-        // Se falhar (ex: fila, sem linhas), retornar erro informativo
         if (assignmentResult.reason?.toLowerCase().includes("fila")) {
           return this.replyError(
             client,
             "Você foi adicionado à fila de espera. Aguarde sua vez.",
           );
-        } else {
-          return this.replyError(
-            client,
-            "Aguarde alocação de linha (nenhuma disponível no momento).",
-          );
         }
+        return this.replyError(
+          client,
+          "Aguarde alocação de linha (nenhuma disponível no momento).",
+        );
       }
     }
 
@@ -2609,8 +2630,8 @@ export class WebsocketGateway
         where: { id: userId },
       });
 
-      if (!operator || operator.role !== "operator") {
-        return { success: false, reason: "Operador não encontrado" };
+      if (!operator) {
+        return { success: false, reason: "Usuário não encontrado" };
       }
 
       // Buscar linha atual

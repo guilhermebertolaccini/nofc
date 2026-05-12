@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Search,
   Download,
+  Paperclip,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { MainLayout } from "@/components/layout/MainLayout";
@@ -109,6 +110,83 @@ function resolveMediaUrl(url?: string | null): string | null {
   if (url.startsWith("data:")) return url;
   const normalized = url.startsWith("/") ? url : `/${url}`;
   return `${API_BASE_URL}${normalized}`;
+}
+
+/** Limite seguro para mídia no WhatsApp (envio típico ~16 MB). */
+const WHATSAPP_MAX_FILE_BYTES = 16 * 1024 * 1024;
+
+/** `accept` do input — tipos pedidos pelo produto + áudio/vídeo (mensagens multimédia). */
+const FILE_INPUT_ACCEPT =
+  "image/*,video/*,audio/*," +
+  "application/pdf," +
+  "application/msword," +
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
+  "application/vnd.ms-excel," +
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet," +
+  "application/vnd.ms-powerpoint," +
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation," +
+  "text/plain,text/csv,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx";
+
+/** Quando `File.type` vem vazio (comum em alguns SO), inferir MIME pela extensão. */
+function guessMimeFromFileName(fileName: string): string {
+  const i = fileName.lastIndexOf(".");
+  const ext =
+    i >= 0 ? fileName.slice(i + 1).toLowerCase().trim() : "";
+  const map: Record<string, string> = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    tiff: "image/tiff",
+    tif: "image/tiff",
+    svg: "image/svg+xml",
+    heic: "image/heic",
+    heif: "image/heif",
+    mp4: "video/mp4",
+    mpeg: "video/mpeg",
+    mpg: "video/mpeg",
+    mov: "video/quicktime",
+    avi: "video/x-msvideo",
+    wmv: "video/x-ms-wmv",
+    webm: "video/webm",
+    "3gp": "video/3gpp",
+    flv: "video/x-flv",
+    mkv: "video/x-matroska",
+    mp3: "audio/mpeg",
+    ogg: "audio/ogg",
+    m4a: "audio/mp4",
+    wav: "audio/wav",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    pdf: "application/pdf",
+    doc: "application/msword",
+    docx:
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ppt: "application/vnd.ms-powerpoint",
+    pptx:
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    rtf: "application/rtf",
+    csv: "text/csv",
+    txt: "text/plain",
+    zip: "application/zip",
+    rar: "application/x-rar-compressed",
+    "7z": "application/x-7z-compressed",
+    gz: "application/gzip",
+    tar: "application/x-tar",
+    json: "application/json",
+    html: "text/html",
+    htm: "text/html",
+    xml: "text/xml",
+    odt: "application/vnd.oasis.opendocument.text",
+    ods: "application/vnd.oasis.opendocument.spreadsheet",
+    odp: "application/vnd.oasis.opendocument.presentation",
+  };
+  return ext ? map[ext] ?? "" : "";
 }
 
 interface ConversationGroup {
@@ -1125,10 +1203,16 @@ export default function Atendimento() {
   // Função para fazer upload de arquivo
   const handleFileUpload = useCallback(
     async (file: File) => {
-      if (!selectedConversation || isUploadingFile) return;
+      const resetFileInput = () => {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      };
 
-      // Validações de arquivo
-      const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+      if (!selectedConversation || isUploadingFile) {
+        resetFileInput();
+        return;
+      }
+
+      // Validações de arquivo (limite alinhado à API WhatsApp)
       const ALLOWED_TYPES = [
         // Imagens
         "image/jpeg",
@@ -1187,27 +1271,32 @@ export default function Atendimento() {
         "application/x-tar",
       ];
 
+      const effectiveMime = file.type || guessMimeFromFileName(file.name);
+
       // Validar tamanho
-      if (file.size > MAX_FILE_SIZE) {
+      if (file.size > WHATSAPP_MAX_FILE_BYTES) {
         playErrorSound();
         toast({
-          title: "Arquivo muito grande",
-          description: `O arquivo não pode ser maior que ${Math.round(
-            MAX_FILE_SIZE / 1024 / 1024,
-          )}MB. Tamanho atual: ${(file.size / 1024 / 1024).toFixed(2)}MB`,
+          title: "Arquivo não enviado",
+          description:
+            `O ficheiro excede o limite de ${WHATSAPP_MAX_FILE_BYTES / 1024 / 1024} MB. ` +
+            `Tamanho atual: ${(file.size / 1024 / 1024).toFixed(2)} MB.`,
           variant: "destructive",
         });
+        resetFileInput();
         return;
       }
 
-      // Validar tipo
-      if (!ALLOWED_TYPES.includes(file.type)) {
+      // Validar tipo (MIME reportado ou inferido pela extensão)
+      if (!effectiveMime || !ALLOWED_TYPES.includes(effectiveMime)) {
         playErrorSound();
         toast({
           title: "Tipo de arquivo não permitido",
-          description: `Tipos permitidos: Imagens, Vídeos, Áudios, PDF, Word, Excel, PowerPoint, TXT, CSV`,
+          description:
+            "Use imagens, áudio, vídeo, PDF, Word, Excel, PowerPoint ou outros tipos da lista aceite.",
           variant: "destructive",
         });
+        resetFileInput();
         return;
       }
 
@@ -1230,7 +1319,15 @@ export default function Atendimento() {
         });
 
         if (!response.ok) {
-          throw new Error("Erro ao fazer upload do arquivo");
+          const messageText =
+            (await response.text().catch(() => "")) ||
+            response.statusText ||
+            "";
+          throw new Error(
+            messageText.trim().length > 0
+              ? `Erro no upload (${response.status}): ${messageText.slice(0, 200)}`
+              : "Erro ao fazer upload do arquivo",
+          );
         }
 
         const data = await response.json();
@@ -1295,10 +1392,7 @@ export default function Atendimento() {
         });
       } finally {
         setIsUploadingFile(false);
-        // Limpar input de arquivo
-        if (fileInputRef.current) {
-          fileInputRef.current.value = "";
-        }
+        resetFileInput();
       }
     },
     [
@@ -1307,20 +1401,31 @@ export default function Atendimento() {
       isRealtimeConnected,
       message,
       user,
+      isAdminTestMode,
       playErrorSound,
+      toast,
     ],
   );
 
   // Handler para seleção de arquivo
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-        handleFileUpload(file);
+      const input = e.target;
+      const file = input.files?.[0];
+      if (!file) {
+        input.value = "";
+        return;
       }
+      void handleFileUpload(file);
     },
     [handleFileUpload],
   );
+
+  const openAttachmentPicker = useCallback(() => {
+    const input = fileInputRef.current;
+    if (input) input.value = "";
+    input?.click();
+  }, []);
 
   const handleSendMessage = useCallback(async () => {
     // Prevenir múltiplos cliques
@@ -2235,8 +2340,9 @@ export default function Atendimento() {
                   </TooltipProvider>
                 </div>
                 <div className="flex items-center gap-2">
-                  {user?.role === "admin" ||
-                    (user?.role === "digital" && (
+                  {(user?.role === "admin" ||
+                    user?.role === "digital" ||
+                    user?.role === "supervisor") && (
                       <TooltipProvider>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -2298,7 +2404,7 @@ export default function Atendimento() {
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
-                    ))}
+                    )}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="outline" size="sm">
@@ -2758,7 +2864,7 @@ export default function Atendimento() {
                     type="file"
                     ref={fileInputRef}
                     onChange={handleFileSelect}
-                    accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx"
+                    accept={FILE_INPUT_ACCEPT}
                     className="hidden"
                     id="file-upload-input"
                     disabled={
@@ -2768,16 +2874,17 @@ export default function Atendimento() {
                   <Button
                     variant="outline"
                     size="icon"
-                    onClick={() => fileInputRef.current?.click()}
+                    type="button"
+                    onClick={openAttachmentPicker}
                     disabled={
                       isUploadingFile || !selectedConversation || isSending
                     }
-                    title="Enviar arquivo"
+                    title="Anexar ficheiro (imagem, PDF, documento, áudio ou vídeo)"
                   >
                     {isUploadingFile ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
-                      <FileText className="h-4 w-4" />
+                      <Paperclip className="h-4 w-4" aria-hidden />
                     )}
                   </Button>
                   <Input

@@ -47,7 +47,7 @@ const menuItems: MenuItem[] = [
     url: "/atendimento",
     icon: Headphones,
     color: "text-cyan",
-    roles: ["operador", "admin"],
+    roles: ["operador", "admin", "supervisor"],
   },
   {
     title: "Supervisionar",

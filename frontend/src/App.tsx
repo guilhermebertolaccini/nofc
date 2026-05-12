@@ -50,12 +50,12 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, user } = useAuth();
 
   if (isAuthenticated) {
-    // Operadores devem ir direto para /atendimento
-    if (user?.role === 'operador') {
+    // Operadores e supervisores seguem primeiro para o atendimento
+    if (user?.role === "operador" || user?.role === "supervisor") {
       return <Navigate to="/atendimento" replace />;
     }
-    // Supervisores e Digital devem ir direto para /supervisionar
-    if (user?.role === 'supervisor' || user?.role === 'digital') {
+    // Digital: visão central de supervisão
+    if (user?.role === "digital") {
       return <Navigate to="/supervisionar" replace />;
     }
     return <Navigate to="/" replace />;
@@ -67,13 +67,12 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 function DashboardRoute() {
   const { user } = useAuth();
 
-  // Operadores não podem acessar o dashboard, redirecionar para /atendimento
-  if (user?.role === 'operador') {
+  // Operadores e supervisores usam /atendimento como home funcional (sem dashboard aggregate)
+  if (user?.role === "operador" || user?.role === "supervisor") {
     return <Navigate to="/atendimento" replace />;
   }
 
-  // Supervisores e Digital não podem acessar o dashboard, redirecionar para /supervisionar
-  if (user?.role === 'supervisor' || user?.role === 'digital') {
+  if (user?.role === "digital") {
     return <Navigate to="/supervisionar" replace />;
   }
 

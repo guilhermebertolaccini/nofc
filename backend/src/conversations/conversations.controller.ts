@@ -101,47 +101,56 @@ export class ConversationsController {
       }, segment: ${user.segment}, queryParams: { segment: ${segment} }`
     );
 
-    // Admin e digital veem TODAS as conversas ativas (sem filtro), a menos que especifiquem um segmento
-    if (user.role === Role.admin || user.role === Role.digital) {
+    const lineId = await this.resolveOperatorLineId(user);
+    const rolesWithLineInboxWhenLinked: Role[] = [
+      Role.operator,
+      Role.supervisor,
+      Role.admin,
+      Role.digital,
+    ];
+    const useLineScopedInbox =
+      lineId != null &&
+      rolesWithLineInboxWhenLinked.includes(user.role as Role);
+
+    // Admin e digital SEM linha: visão global (auditoria / gestão)
+    if (
+      (user.role === Role.admin || user.role === Role.digital) &&
+      !useLineScopedInbox
+    ) {
       const filters: any = { tabulation: null };
       if (segment && segment !== "all") {
         filters.segment = +segment;
       }
       return this.conversationsService.findAll(filters);
     }
-    // Supervisor vê apenas conversas ativas do seu segmento
-    if (user.role === Role.supervisor) {
+
+    // Supervisor SEM linha: apenas conversas do segmento do cargo (comportamento legado)
+    if (user.role === Role.supervisor && !useLineScopedInbox) {
       return this.conversationsService.findAll({
         segment: user.segment,
         tabulation: null,
       });
     }
 
-    // OPERADOR — visibilidade depende do Shared Inbox:
-    //   - sharedLineMode = true  → vê TODAS as conversas da linha
-    //                              compartilhada (mesmo segmento). Necessário
-    //                              para que grupos e leads atribuídos a outro
-    //                              operador continuem aparecendo.
-    //   - sharedLineMode = false → modo legado: vê apenas conversas com seu
-    //                              userId (isolamento estrito).
+    // Operador sempre; admin / supervisor / digital COM linha vinculada: mesma
+    // semântica de atendimento (Shared Inbox por userLine ou legado por userId).
     const controlPanel = await this.controlPanelService.findOne();
     const sharedLineMode = !!controlPanel?.sharedLineMode;
-    const lineId = await this.resolveOperatorLineId(user);
 
     console.log(
-      `📋 [GET /conversations/active] Operador ${user.name} - sharedLineMode=${sharedLineMode}, lineId=${lineId}, segment=${user.segment}, userId=${user.id}`
+      `[GET /conversations/active] inbox por linha: ${user.name} sharedLineMode=${sharedLineMode}, lineId=${lineId}, segment=${user.segment}, userId=${user.id}, role=${user.role}`,
     );
 
     if (sharedLineMode) {
       return this.conversationsService.findActiveConversations(
         lineId ?? undefined,
         undefined,
-        { sharedLineMode: true, segment: user.segment ?? null }
+        { sharedLineMode: true, segment: user.segment ?? null },
       );
     }
     return this.conversationsService.findActiveConversations(
       undefined,
-      user.id
+      user.id,
     );
   }
 
@@ -152,37 +161,48 @@ export class ConversationsController {
       `📋 [GET /conversations/tabulated] Usuário: ${user.name} (${user.role}), line: ${user.line}, segment: ${user.segment}`
     );
 
-    // Admin e digital veem TODAS as conversas tabuladas (sem filtro)
-    if (user.role === Role.admin || user.role === Role.digital) {
+    const lineId = await this.resolveOperatorLineId(user);
+    const rolesWithLineInboxWhenLinked: Role[] = [
+      Role.operator,
+      Role.supervisor,
+      Role.admin,
+      Role.digital,
+    ];
+    const useLineScopedInbox =
+      lineId != null &&
+      rolesWithLineInboxWhenLinked.includes(user.role as Role);
+
+    if (
+      (user.role === Role.admin || user.role === Role.digital) &&
+      !useLineScopedInbox
+    ) {
       return this.conversationsService.findAll({ tabulation: { not: null } });
     }
-    // Supervisor vê apenas conversas tabuladas do seu segmento
-    if (user.role === Role.supervisor) {
+
+    if (user.role === Role.supervisor && !useLineScopedInbox) {
       return this.conversationsService.findAll({
         segment: user.segment,
         tabulation: { not: null },
       });
     }
 
-    // OPERADOR — mesma semântica do /active (ver bloco acima).
     const controlPanel = await this.controlPanelService.findOne();
     const sharedLineMode = !!controlPanel?.sharedLineMode;
-    const lineId = await this.resolveOperatorLineId(user);
 
     console.log(
-      `📋 [GET /conversations/tabulated] Operador ${user.name} - sharedLineMode=${sharedLineMode}, lineId=${lineId}, segment=${user.segment}, userId=${user.id}`
+      `[GET /conversations/tabulated] inbox por linha: ${user.name} sharedLineMode=${sharedLineMode}, lineId=${lineId}, segment=${user.segment}, userId=${user.id}`,
     );
 
     if (sharedLineMode) {
       return this.conversationsService.findTabulatedConversations(
         lineId ?? undefined,
         undefined,
-        { sharedLineMode: true, segment: user.segment ?? null }
+        { sharedLineMode: true, segment: user.segment ?? null },
       );
     }
     return this.conversationsService.findTabulatedConversations(
       undefined,
-      user.id
+      user.id,
     );
   }
 
@@ -237,7 +257,7 @@ export class ConversationsController {
   }
 
   @Post("tabulate/:phone")
-  @Roles(Role.operator)
+  @Roles(Role.admin, Role.supervisor, Role.operator, Role.digital)
   tabulate(
     @Param("phone") phone: string,
     @Body() tabulateDto: TabulateConversationDto

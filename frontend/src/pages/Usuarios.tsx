@@ -159,9 +159,10 @@ export default function Usuarios() {
           lineEvolutionName: userLine?.evolutionName,
           isOnline: u.status === "Online",
           oneToOneActive: u.oneToOneActive ?? false,
-            identifier: (u as ApiUser & { identifier?: "cliente" | "proprietario" })
-              .identifier || "proprietario",
-            isActive: (u as ApiUser & { isActive?: boolean }).isActive ?? true,
+          identifier:
+            (u as ApiUser & { identifier?: "cliente" | "proprietario" }).identifier ||
+            "proprietario",
+          isActive: (u as ApiUser & { isActive?: boolean }).isActive ?? true,
         };
       });
 
@@ -210,48 +211,40 @@ export default function Usuarios() {
         <Badge className={roleColors[user.role]}>{roleLabels[user.role]}</Badge>
       ),
     },
-    ...(currentUser?.role === "digital"
-      ? []
-      : [
-          {
-            key: "lineDisplay",
-            label: "Linha",
-            render: (user: User) => {
-              const value = user.lineRealNumber ?? user.lineName ?? "-";
-              if (value === "-") return "-";
-              if (user.lineRealNumber && user.lineRealNumber.startsWith("55")) {
-                return user.lineRealNumber.slice(2);
-              }
-              return value;
-            },
-          } as Column<User>,
-          {
-            key: "lineEvolutionName",
-            label: "Evolution",
-            render: (user: User) => user.lineEvolutionName || "-",
-          } as Column<User>,
-        ]),
-    ...(currentUser?.role === "digital"
-      ? []
-      : [
-          {
-            key: "isOnline",
-            label: "Status",
-            render: (user: User) => (
-              <div className="flex items-center gap-2">
-                <div
-                  className={cn(
-                    "w-2 h-2 rounded-full",
-                    user.isOnline ? "bg-success" : "bg-muted-foreground"
-                  )}
-                />
-                <span className="text-sm">
-                  {user.isOnline ? "Online" : "Offline"}
-                </span>
-              </div>
-            ),
-          } as Column<User>,
-        ]),
+    {
+      key: "lineDisplay",
+      label: "Linha",
+      render: (user: User) => {
+        const value = user.lineRealNumber ?? user.lineName ?? "-";
+        if (value === "-") return "-";
+        if (user.lineRealNumber && user.lineRealNumber.startsWith("55")) {
+          return user.lineRealNumber.slice(2);
+        }
+        return value;
+      },
+    } as Column<User>,
+    {
+      key: "lineEvolutionName",
+      label: "Evolution",
+      render: (user: User) => user.lineEvolutionName || "-",
+    } as Column<User>,
+    {
+      key: "isOnline",
+      label: "Status",
+      render: (user: User) => (
+        <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              "w-2 h-2 rounded-full",
+              user.isOnline ? "bg-success" : "bg-muted-foreground"
+            )}
+          />
+          <span className="text-sm">
+            {user.isOnline ? "Online" : "Offline"}
+          </span>
+        </div>
+      ),
+    } as Column<User>,
     {
       key: "isActive",
       label: "Ativo",
@@ -499,7 +492,9 @@ export default function Usuarios() {
       </div>
       {(formData.role === "operador" ||
         formData.role === "supervisor" ||
-        formData.role === "digital") && (
+        formData.role === "digital" ||
+        formData.role === "admin" ||
+        formData.role === "ativador") && (
           <div className="space-y-2">
             <Label htmlFor="segment">Segmento</Label>
             <Select
@@ -521,62 +516,59 @@ export default function Usuarios() {
             </Select>
           </div>
         )}
-      {currentUser?.role !== "digital" && (
-        <div className="space-y-2">
-          <Label htmlFor="line">Linha WhatsApp</Label>
-          <Select
-            value={formData.line}
-            onValueChange={(value) =>
-              setFormData({ ...formData, line: value })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Selecione uma linha" />
-            </SelectTrigger>
-            <SelectContent>
-              {lines
-                .filter((line) => {
-                  // SHARED INBOX:
-                  //   No modelo de número único, várias operadores podem
-                  //   compartilhar a mesma linha. Removemos a antiga regra
-                  //   que excluía linhas com `operators.length > 0` ou que
-                  //   já apareciam em `users[].line`. Agora qualquer linha
-                  //   ATIVA é elegível para vínculo.
-                  return line.lineStatus === "active";
-                })
-                .map((line) => {
-                  const operatorsCount = Array.isArray(line.operators)
-                    ? line.operators.length
-                    : 0;
-                  return (
-                    <SelectItem key={line.id} value={String(line.id)}>
-                      {line.phone}{" "}
-                      {line.segmentName ? `[${line.segmentName}]` : ""}
-                      {line.oficial ? " (Oficial)" : ` (${line.evolutionName})`}
-                      {operatorsCount > 0 && (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          ({operatorsCount} operador
-                          {operatorsCount > 1 ? "es" : ""} vinculado
-                          {operatorsCount > 1 ? "s" : ""})
-                        </span>
-                      )}
-                    </SelectItem>
-                  );
-                })}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            Define qual linha será usada para envio de mensagens. No modo
-            Shared Inbox, várias operadores podem compartilhar a mesma linha.
-          </p>
-        </div>
-      )}
-      {formData.role === "operador" && (
+      <div className="space-y-2">
+        <Label htmlFor="line">Linha WhatsApp</Label>
+        <Select
+          value={formData.line}
+          onValueChange={(value) =>
+            setFormData({ ...formData, line: value })
+          }
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Selecione uma linha" />
+          </SelectTrigger>
+          <SelectContent>
+            {lines
+              .filter((line) => {
+                // SHARED INBOX: qualquer linha ativa pode ser compartilhada.
+                return line.lineStatus === "active";
+              })
+              .map((line) => {
+                const operatorsCount = Array.isArray(line.operators)
+                  ? line.operators.length
+                  : 0;
+                return (
+                  <SelectItem key={line.id} value={String(line.id)}>
+                    {line.phone}{" "}
+                    {line.segmentName ? `[${line.segmentName}]` : ""}
+                    {line.oficial ? " (Oficial)" : ` (${line.evolutionName})`}
+                    {operatorsCount > 0 && (
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        ({operatorsCount} operador
+                        {operatorsCount > 1 ? "es" : ""} vinculado
+                        {operatorsCount > 1 ? "s" : ""})
+                      </span>
+                    )}
+                  </SelectItem>
+                );
+              })}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          Define qual linha será usada para envio de mensagens. No modo Shared
+          Inbox, vários usuários podem compartilhar a mesma linha — qualquer
+          perfil pode ser vinculado.
+        </p>
+      </div>
+      {(formData.role === "operador" ||
+        formData.role === "supervisor" ||
+        formData.role === "digital" ||
+        formData.role === "admin") && (
         <div className="flex items-center justify-between rounded-lg border p-4">
           <div className="space-y-0.5">
             <Label className="text-base font-medium">Permissão 1x1</Label>
             <p className="text-sm text-muted-foreground">
-              Permitir que este operador inicie conversas 1x1
+              Permitir iniciar conversas diretas com contatos pelo atendimento
             </p>
           </div>
           <input
