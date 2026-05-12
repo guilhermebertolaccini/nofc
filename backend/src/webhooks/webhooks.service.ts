@@ -1073,34 +1073,121 @@ export class WebhooksService {
             .replace("@c.us", "")
             .replace("@lid", "");
 
-          // Para grupos, buscar nome via Evolution API
-          let contactName = chat.name || chat.pushName || contactPhone;
-          if (isGroup) {
-            const groupName = await this.fetchGroupName(
-              remoteJid,
-              evolutionUrl,
-              evolutionKey,
-              instanceName,
-            );
-            if (groupName) {
-              contactName = groupName;
-            }
-          }
+          // ───────────────────────────────────────────────────────────
+          // SHARED INBOX – Resolução robusta do nome (mesma cascata do
+          // MESSAGES_UPSERT). Política: NUNCA descartar mensagem do
+          // histórico por causa do nome do grupo / contato.
+          //
+          // Cascata (PARA GRUPOS):
+          //   1. Contact.customTitle    (manual do operador — Shared Inbox)
+          //   2. Contact.name           (cache decente no banco)
+          //   3. Evolution API          (fetchGroupName c/ timeout 5s)
+          //   4. Fallback determinístico ("Grupo <últimos6dígitos>")
+          //
+          // Para 1x1, o nome vem do chat.name / pushName / phone — sem
+          // chamadas externas.
+          // ───────────────────────────────────────────────────────────
+          const contactIdentifier = isGroup ? remoteJid : contactPhone;
 
-          // Buscar ou criar contato
+          // Lookup adiantado: reaproveitado no upsert abaixo.
           let contact = await this.prisma.contact.findFirst({
-            where: { phone: isGroup ? remoteJid : contactPhone },
+            where: { phone: contactIdentifier },
           });
 
+          const hasDecentCachedName = (name?: string | null) =>
+            !!name &&
+            name.trim() !== "" &&
+            name.trim() !== "Grupo sem nome" &&
+            name.trim() !== "Desconhecido";
+
+          let contactName: string =
+            chat.name || chat.pushName || contactPhone;
+
+          if (isGroup) {
+            let resolvedGroupName: string | null = null;
+
+            // (1) customTitle do banco — fonte de verdade no Shared Inbox
+            if (contact?.customTitle && contact.customTitle.trim()) {
+              resolvedGroupName = contact.customTitle.trim();
+              console.log(
+                `📌 [Webhook/History] Reusando customTitle (skip Evolution): ${resolvedGroupName}`,
+              );
+            }
+            // (2) name em cache no banco
+            else if (hasDecentCachedName(contact?.name)) {
+              resolvedGroupName = contact!.name.trim();
+              console.log(
+                `📌 [Webhook/History] Reusando contact.name em cache (skip Evolution): ${resolvedGroupName}`,
+              );
+            }
+            // (3) Evolution API com timeout curto (NUNCA aborta)
+            else {
+              try {
+                const apiName = await this.fetchGroupName(
+                  remoteJid,
+                  evolutionUrl,
+                  evolutionKey,
+                  instanceName,
+                );
+                if (apiName && apiName.trim()) {
+                  resolvedGroupName = apiName.trim();
+                  console.log(
+                    `✅ [Webhook/History] Nome do grupo via Evolution API: ${resolvedGroupName}`,
+                  );
+                }
+              } catch (err: any) {
+                // Defesa extra: fetchGroupName já trata internamente.
+                console.warn(
+                  `⚠️ [Webhook/History] Erro na resolução do nome do grupo (seguindo com fallback): ${err?.message}`,
+                );
+              }
+            }
+
+            // (4) Fallback determinístico — NUNCA descarta a mensagem
+            if (!resolvedGroupName || !hasDecentCachedName(resolvedGroupName)) {
+              const rawId = String(remoteJid).split("@")[0];
+              const shortId = rawId.slice(-6);
+              resolvedGroupName = shortId
+                ? `Grupo ${shortId}`
+                : "Grupo Desconhecido";
+              console.log(
+                `🪪 [Webhook/History] Fallback de nome do grupo aplicado: ${resolvedGroupName}`,
+              );
+            }
+
+            contactName = resolvedGroupName;
+          }
+
+          // ───────────────────────────────────────────────────────────
+          // Upsert do Contact
+          // ⚠️ NÃO existe early return / continue por falta de nome aqui.
+          // Como a cascata acima GARANTE contactName válido, o histórico
+          // é sempre persistido com fallback se necessário.
+          // ───────────────────────────────────────────────────────────
           if (!contact) {
             contact = await this.prisma.contact.create({
               data: {
                 name: contactName,
-                phone: isGroup ? remoteJid : contactPhone,
+                phone: contactIdentifier,
                 segment: line.segment,
                 isNameManual: false,
               },
             });
+          } else if (
+            isGroup &&
+            !contact.isNameManual &&
+            !contact.customTitle && // Shared Inbox: customTitle trava auto-update
+            hasDecentCachedName(contactName) &&
+            contact.name !== contactName
+          ) {
+            // Atualizar nome apenas se nada está travado e o novo é "decente"
+            contact = await this.prisma.contact.update({
+              where: { id: contact.id },
+              data: { name: contactName },
+            });
+            console.log(
+              `✅ [Webhook/History] Nome do grupo atualizado: ${contact.name} (${contactIdentifier})`,
+            );
           }
 
           // Buscar mensagens da conversa (últimas 10)

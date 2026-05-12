@@ -187,6 +187,15 @@ export default function Atendimento() {
   const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   // Subscribe to new messages in real-time
+  //
+  // ⚠️ Defense-in-depth contra DUPLICAÇÃO de mensagens:
+  // Mesmo com o backend já deduplicando o fan-out via fetchSockets na room,
+  // o React em StrictMode (dev) pode invocar o handler 2× durante o reflow
+  // e o socket pode entregar uma mensagem retransmitida em raras condições
+  // de reconexão. Aqui aplicamos uma trava de UNICIDADE por `id`:
+  //   - antes de fazer push em `messages`, verificamos se já existe `m.id === newMsg.id`.
+  // Sem isso, o operador via 2-3 balões idênticos na tela; ao dar F5,
+  // como o estado é reidratado do banco (sem repetidos), tudo voltava ao normal.
   useRealtimeSubscription(
     WS_EVENTS.NEW_MESSAGE,
     (data: any) => {
@@ -206,9 +215,16 @@ export default function Atendimento() {
           );
 
           if (existing) {
-            // Add message to existing conversation
+            // Já existe a conversa: append da mensagem com guard por id.
             const updated = prev.map((conv) => {
               if (conv.contactPhone === newMsg.contactPhone) {
+                // ⛔ DEDUPE: se já existe mensagem com o mesmo id, não reinserir.
+                if (
+                  newMsg.id != null &&
+                  conv.messages.some((m) => m.id === newMsg.id)
+                ) {
+                  return conv;
+                }
                 return {
                   ...conv,
                   messages: [...conv.messages, newMsg].sort(
@@ -247,6 +263,13 @@ export default function Atendimento() {
         if (selectedPhoneRef.current === newMsg.contactPhone) {
           setSelectedConversation((prev) => {
             if (!prev) return null;
+            // ⛔ DEDUPE: mesmo id já presente → não reinserir.
+            if (
+              newMsg.id != null &&
+              prev.messages.some((m) => m.id === newMsg.id)
+            ) {
+              return prev;
+            }
             return {
               ...prev,
               messages: [...prev.messages, newMsg].sort(
@@ -297,6 +320,13 @@ export default function Atendimento() {
             return prev
               .map((conv) => {
                 if (conv.contactPhone === newMsg.contactPhone) {
+                  // ⛔ DEDUPE por id (mesma defesa do new_message)
+                  if (
+                    newMsg.id != null &&
+                    conv.messages.some((m) => m.id === newMsg.id)
+                  ) {
+                    return conv;
+                  }
                   return {
                     ...conv,
                     messages: [...conv.messages, newMsg].sort(
@@ -334,6 +364,13 @@ export default function Atendimento() {
         if (selectedPhoneRef.current === newMsg.contactPhone) {
           setSelectedConversation((prev) => {
             if (!prev) return null;
+            // ⛔ DEDUPE por id
+            if (
+              newMsg.id != null &&
+              prev.messages.some((m) => m.id === newMsg.id)
+            ) {
+              return prev;
+            }
             return {
               ...prev,
               messages: [...prev.messages, newMsg].sort(
@@ -390,6 +427,71 @@ export default function Atendimento() {
           forceShow: true,
         });
       }
+    },
+    [playErrorSound],
+  );
+
+  // ─────────────────────────────────────────────────────────────────────
+  // LINHA BANIDA — Modal "fantasma" reativado.
+  //
+  // O backend dispara `WS_EVENTS.LINE_BANNED` (`'line-banned'`) quando a
+  // linha atribuída ao operador é marcada como banida pelo monitor de
+  // saúde ou pelo fluxo de envio (handleBannedLine → reallocate). Até
+  // agora a UI tinha o estado + o modal renderizado, mas faltava o
+  // listener que setava `lineBannedNotification`, deixando o operador
+  // tentar enviar em uma linha morta.
+  //
+  // Aceitamos um payload tolerante para evitar quebrar caso o backend
+  // emita variações de nome de campo (ex.: `linePhone` vs `bannedLinePhone`).
+  // ─────────────────────────────────────────────────────────────────────
+  useRealtimeSubscription(
+    WS_EVENTS.LINE_BANNED,
+    (data: any) => {
+      console.log("[Atendimento] Line banned event received:", data);
+      if (!data) return;
+
+      // Toca som de alerta para chamar atenção do operador.
+      playErrorSound();
+
+      // Normalização defensiva do payload — qualquer um destes campos
+      // pode vir do backend; usamos o primeiro não-vazio.
+      const bannedLinePhone: string =
+        data.bannedLinePhone ||
+        data.linePhone ||
+        data.phone ||
+        data.oldLinePhone ||
+        "";
+      const newLinePhone: string | null =
+        data.newLinePhone || data.replacementLinePhone || null;
+
+      const rawContacts: any[] = Array.isArray(data.contactsToRecall)
+        ? data.contactsToRecall
+        : Array.isArray(data.contacts)
+          ? data.contacts
+          : [];
+      const contactsToRecall = rawContacts
+        .map((c) => ({
+          phone: c?.phone || c?.contactPhone || "",
+          name: c?.name || c?.contactName || c?.phone || "",
+        }))
+        .filter((c) => !!c.phone);
+
+      const message: string =
+        data.message ||
+        (newLinePhone
+          ? `A linha ${bannedLinePhone || "atribuída"} foi banida. Você foi realocado para a linha ${newLinePhone}.`
+          : `A linha ${bannedLinePhone || "atribuída"} foi banida e nenhuma linha substituta está disponível no momento.`);
+
+      // Aborta envios em andamento — a linha está morta.
+      setIsSending(false);
+      setIsCreatingConversation(false);
+
+      setLineBannedNotification({
+        bannedLinePhone,
+        newLinePhone,
+        contactsToRecall,
+        message,
+      });
     },
     [playErrorSound],
   );

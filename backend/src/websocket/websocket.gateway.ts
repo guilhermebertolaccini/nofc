@@ -1062,13 +1062,22 @@ export class WebsocketGateway
             if (conversation) {
               client.emit("message-sent", { message: conversation });
 
-              // SINCRONIZAÇÃO: Emitir para outros operadores da mesma linha
+              // SHARED INBOX: room da conversa (todos exceto o remetente)
+              const tplRoom = data.contactPhone
+                ? this.buildConversationRoom(data.contactPhone)
+                : null;
+              if (tplRoom) {
+                client.to(tplRoom).emit("new_message", { message: conversation });
+              }
+
+              // SIDEBAR: outros operadores da linha que NÃO estão na room
               if (currentLineId) {
                 await this.emitToLineOperators(
                   currentLineId,
                   "new_message",
                   { message: conversation },
                   user.id,
+                  tplRoom || undefined,
                 );
               }
 
@@ -1952,19 +1961,23 @@ export class WebsocketGateway
       // remetente, que já recebeu via 'message-sent'). Garante que qualquer
       // outro operador que esteja com o mesmo chat aberto veja a mensagem
       // instantaneamente, sem depender de vínculo à linha.
-      if (data.contactPhone) {
-        const room = this.buildConversationRoom(data.contactPhone);
-        client.to(room).emit("new_message", { message: conversation });
+      const conversationRoom = data.contactPhone
+        ? this.buildConversationRoom(data.contactPhone)
+        : null;
+      if (conversationRoom) {
+        client.to(conversationRoom).emit("new_message", { message: conversation });
       }
 
-      // SINCRONIZAÇÃO: Emitir para TODOS os outros operadores da mesma linha (modo compartilhado)
-      // Isso garante que quando X envia mensagem, Y também vê em tempo real
+      // SINCRONIZAÇÃO sidebar: emitir para outros operadores da linha que
+      // NÃO estão com este chat aberto (dedupe via fetchSockets da room).
+      // Quem está na room já recebeu via `client.to(room).emit` acima.
       if (currentLineId) {
         await this.emitToLineOperators(
           currentLineId,
           "new_message",
           { message: conversation },
           user.id,
+          conversationRoom || undefined,
         );
       }
 
@@ -2877,150 +2890,153 @@ export class WebsocketGateway
     }
   }
 
-  // Método para emitir mensagens recebidas via webhook
+  /**
+   * Emite uma `new_message` para todos os destinatários relevantes,
+   * GARANTINDO que cada socket receba NO MÁXIMO 1 cópia.
+   *
+   * Histórico do bug (Shared Inbox):
+   *   A versão anterior fazia 3 disparos para o mesmo evento:
+   *     (a) `this.server.to(room).emit(...)` para a room da conversa
+   *     (b) `this.server.to(socketId).emit(...)` para o `userId` atribuído
+   *     (c) loop em `lineOperators` emitindo para cada um individualmente
+   *   Um operador que estivesse com o chat aberto (na room) E fosse o
+   *   atribuído E estivesse vinculado à linha recebia 3 balões iguais.
+   *
+   * Estratégia agora:
+   *   1. Coletar quais socketIds JÁ ESTÃO na room da conversa
+   *      (esses serão entregues pelo emit-room).
+   *   2. Emitir UMA vez para a room (`server.to(room).emit`).
+   *   3. Para os destinatários "de sidebar" (operadores online da linha +
+   *      supervisores do segmento), emitir 1 cópia APENAS se o seu
+   *      socket NÃO estiver na room — assim quem tem o chat aberto não
+   *      duplica, e quem não tem ainda atualiza a lista lateral.
+   */
   async emitNewMessage(conversation: any) {
+    if (!conversation?.contactPhone) {
+      console.warn(
+        `⚠️ [WebSocket] emitNewMessage chamado sem contactPhone — abortando`,
+      );
+      return;
+    }
+
     console.log(
       `📤 Emitindo new_message para contactPhone: ${conversation.contactPhone}`,
       {
         userId: conversation.userId,
         userLine: conversation.userLine,
+        messageId: conversation.id,
       },
     );
 
-    // ---------------------------------------------------------------
-    // SHARED INBOX – Emissão para a sala da conversa
-    // Garante sync instantâneo entre qualquer operador que esteja com
-    // o mesmo chat aberto (Operador A envia → Operador B vê na hora).
-    // É o caminho principal no modo de número único.
-    // ---------------------------------------------------------------
-    if (conversation?.contactPhone) {
-      const room = this.buildConversationRoom(conversation.contactPhone);
-      this.server.to(room).emit("new_message", { message: conversation });
+    const room = this.buildConversationRoom(conversation.contactPhone);
+    const payload = { message: conversation };
+
+    // ─────────────────────────────────────────────────────────────────
+    // (1) Snapshot dos sockets que já receberão via room — usado para
+    //     deduplicar o fan-out subsequente. fetchSockets() é assíncrono
+    //     e funciona com adapters in-memory e Redis.
+    // ─────────────────────────────────────────────────────────────────
+    let socketIdsInRoom: Set<string>;
+    try {
+      const socketsInRoom = await this.server.in(room).fetchSockets();
+      socketIdsInRoom = new Set(socketsInRoom.map((s) => s.id));
+    } catch (err: any) {
+      console.warn(
+        `⚠️ [WebSocket] fetchSockets falhou para ${room}: ${err?.message}. ` +
+          `Seguindo sem dedupe (pior caso: 1 duplicata por destinatário).`,
+      );
+      socketIdsInRoom = new Set();
     }
 
-    // Verificar se o modo compartilhado está ativo
+    // ─────────────────────────────────────────────────────────────────
+    // (2) Disparo PRIMÁRIO: room da conversa.
+    //     Atende quem está com o chat aberto.
+    // ─────────────────────────────────────────────────────────────────
+    this.server.to(room).emit("new_message", payload);
+    console.log(
+      `  ↳ room=${room} → ${socketIdsInRoom.size} socket(s) na sala`,
+    );
+
+    // ─────────────────────────────────────────────────────────────────
+    // (3) Disparo SECUNDÁRIO (sidebar): operadores online da linha que
+    //     NÃO estão com o chat aberto. Apenas 1 cópia por socket.
+    // ─────────────────────────────────────────────────────────────────
     const controlPanel = await this.controlPanelService.findOne();
     const sharedLineMode = controlPanel?.sharedLineMode ?? false;
 
-    // Emitir para o operador específico que está atendendo (userId)
-    if (conversation.userId) {
-      const socketId = this.connectedUsers.get(conversation.userId);
-      if (socketId) {
-        const user = await this.prisma.user.findUnique({
-          where: { id: conversation.userId },
-        });
-        if (user) {
-          console.log(
-            `  → Enviando para ${user.name} (${user.role}) - operador específico (userId: ${conversation.userId})`,
-          );
-          // Usar underscore para corresponder ao frontend: new_message
-          this.server
-            .to(socketId)
-            .emit("new_message", { message: conversation });
-        } else {
-          console.warn(
-            `  ⚠️ Operador ${conversation.userId} não encontrado no banco`,
-          );
-        }
-      } else {
-        console.warn(
-          `  ⚠️ Operador ${conversation.userId} não está conectado via WebSocket`,
-        );
-      }
+    // Conjunto final de userIds que devem receber a sidebar-copy.
+    const sidebarTargets = new Set<number>();
+
+    // Modo legado: operador atribuído (1x1).
+    if (!sharedLineMode && conversation.userId) {
+      sidebarTargets.add(conversation.userId);
     }
 
-    // No modo compartilhado, SEMPRE enviar para todos os usuários da linha
-    // Fora do modo compartilhado, enviar para outros operadores da linha APENAS se NÃO houver userId atribuído
-    // ISOLAMENTO: Se userId está definido, a conversa pertence a esse operador e NÃO deve ir para outros
-    const shouldEmitToAllLineUsers = sharedLineMode || !conversation.userId;
-
-    if (shouldEmitToAllLineUsers && conversation.userLine) {
-      console.log(
-        `  → ${sharedLineMode ? "Modo compartilhado: " : "Sem operador atribuído: "}Enviando para todos os usuários online da linha ${conversation.userLine}`,
-      );
-      const lineOperators = await (this.prisma as any).lineOperator.findMany({
-        where: { lineId: conversation.userLine },
-        include: { user: true },
-      });
-
-      // No modo compartilhado, incluir todos os usuários (admins, operadores, etc)
-      // Fora do modo compartilhado, apenas operadores
-      const onlineLineOperators = lineOperators.filter((lo) => {
-        if (sharedLineMode) {
-          // Modo compartilhado: incluir todos os usuários online (admins, operadores, supervisores)
-          return (
-            lo.user.status === "Online" &&
-            (lo.user.role === "operator" ||
-              lo.user.role === "admin" ||
-              lo.user.role === "supervisor")
-          );
-        } else {
-          // Modo normal: apenas operadores
-          return lo.user.status === "Online" && lo.user.role === "operator";
-        }
-      });
-
-      console.log(
-        `  → Encontrados ${onlineLineOperators.length} usuário(s) online na linha ${conversation.userLine}`,
-      );
-
-      onlineLineOperators.forEach((lo) => {
-        // No modo compartilhado, enviar para todos (mesmo que já tenha enviado para userId)
-        // Fora do modo compartilhado, não enviar duplicado se já enviou para userId
-        if (sharedLineMode || lo.userId !== conversation.userId) {
-          const socketId = this.connectedUsers.get(lo.userId);
-          if (socketId) {
-            console.log(
-              `  → Enviando para ${lo.user.name} (${lo.user.role}) - usuário da linha`,
-            );
-            this.server
-              .to(socketId)
-              .emit("new_message", { message: conversation });
-          } else {
-            console.warn(
-              `  ⚠️ Usuário ${lo.user.name} (${lo.userId}) não está conectado via WebSocket`,
-            );
+    // Shared mode OU mensagem sem userId: todos os operadores online
+    // da linha precisam ver a conversa entrar/atualizar na sidebar.
+    if ((sharedLineMode || !conversation.userId) && conversation.userLine) {
+      try {
+        const lineOperators = await (this.prisma as any).lineOperator.findMany(
+          {
+            where: { lineId: conversation.userLine },
+            include: { user: true },
+          },
+        );
+        for (const lo of lineOperators) {
+          const r = lo.user.role;
+          const allowed = sharedLineMode
+            ? r === "operator" || r === "admin" || r === "supervisor"
+            : r === "operator";
+          if (lo.user.status === "Online" && allowed) {
+            sidebarTargets.add(lo.userId);
           }
         }
-      });
-
-      // Se não encontrou nenhum usuário online na linha, logar para debug
-      if (onlineLineOperators.length === 0) {
-        console.warn(
-          `  ⚠️ Nenhum usuário online encontrado na linha ${conversation.userLine} para receber a mensagem`,
-        );
-        console.log(
-          `  → Usuários vinculados à linha:`,
-          lineOperators.map((lo) => ({
-            userId: lo.userId,
-            name: lo.user.name,
-            status: lo.user.status,
-            role: lo.user.role,
-            connected: this.connectedUsers.has(lo.userId),
-          })),
+      } catch (err: any) {
+        console.error(
+          `❌ [WebSocket] Erro ao buscar lineOperators da linha ${conversation.userLine}:`,
+          err?.message,
         );
       }
-    } else if (
-      !sharedLineMode &&
-      conversation.userId &&
-      !this.connectedUsers.has(conversation.userId)
-    ) {
-      // ISOLAMENTO: Operador atribuído está offline. NÃO enviar para outros operadores da linha.
-      console.warn(
-        `  ⚠️ [ISOLAMENTO] Operador ${conversation.userId} está offline. Mensagem NÃO será enviada para outros operadores da linha (modo não-compartilhado).`,
-      );
-    } else if (!conversation.userLine && !conversation.userId) {
-      console.warn(
-        `  ⚠️ Conversa sem userId e sem userLine - não é possível enviar`,
-      );
     }
 
-    // Emitir para supervisores do segmento
+    // Supervisores do segmento entram no mesmo conjunto (sem disparo extra).
     if (conversation.segment) {
-      this.emitToSupervisors(conversation.segment, "new_message", {
-        message: conversation,
-      });
+      try {
+        const supervisors = await this.prisma.user.findMany({
+          where: { role: "supervisor", segment: conversation.segment },
+        });
+        for (const sup of supervisors) sidebarTargets.add(sup.id);
+      } catch (err: any) {
+        console.error(
+          `❌ [WebSocket] Erro ao buscar supervisores do segmento ${conversation.segment}:`,
+          err?.message,
+        );
+      }
     }
+
+    // Emitir 1 cópia por socket, pulando quem JÁ recebeu via room.
+    let sidebarDeliveries = 0;
+    let sidebarDedupedByRoom = 0;
+    let sidebarOffline = 0;
+    for (const userId of sidebarTargets) {
+      const socketId = this.connectedUsers.get(userId);
+      if (!socketId) {
+        sidebarOffline++;
+        continue;
+      }
+      if (socketIdsInRoom.has(socketId)) {
+        sidebarDedupedByRoom++;
+        continue; // já recebeu via room — NÃO duplicar
+      }
+      this.server.to(socketId).emit("new_message", payload);
+      sidebarDeliveries++;
+    }
+
+    console.log(
+      `  ↳ sidebar fanout → ${sidebarDeliveries} entregue(s), ` +
+        `${sidebarDedupedByRoom} dedup-by-room, ${sidebarOffline} offline ` +
+        `(sharedLineMode=${sharedLineMode})`,
+    );
   }
 
   emitToUser(userId: number, event: string, data: any) {
@@ -3034,54 +3050,123 @@ export class WebsocketGateway
   }
 
   /**
-   * Emite evento para TODOS os operadores da mesma linha (modo compartilhado)
-   * Usado para sincronizar mensagens enviadas entre operadores que compartilham a mesma linha
-   * ISOLAMENTO: Só emite para outros operadores se o modo compartilhado estiver ativo
+   * Notifica em tempo real um operador específico de que a sua linha foi
+   * banida. Emite o evento `'line-banned'` (consumido pelo
+   * `useRealtimeSubscription(WS_EVENTS.LINE_BANNED, …)` em
+   * `Atendimento.tsx`), que abre o modal-fantasma de Linha Banida.
+   *
+   * Payload esperado pelo frontend:
+   *   {
+   *     bannedLinePhone: string,
+   *     newLinePhone:   string | null,
+   *     contactsToRecall: Array<{ phone: string; name: string }>,
+   *     message:        string,
+   *   }
+   *
+   * Falha silenciosa: se o operador não estiver conectado, apenas loga
+   * (a notificação se perde, o que é aceitável — quando o operador
+   * voltar, a UI ressincroniza via `findActiveConversations`).
+   */
+  notifyLineBannedToOperator(userId: number, payload: any) {
+    const socketId = this.connectedUsers.get(userId);
+    if (!socketId) {
+      console.warn(
+        `⚠️ [WebSocket] notifyLineBannedToOperator: operador ${userId} não está conectado — evento 'line-banned' não emitido`,
+      );
+      return;
+    }
+    this.server.to(socketId).emit("line-banned", payload);
+    console.log(
+      `📢 [WebSocket] 'line-banned' emitido para userId=${userId} (banned=${payload?.bannedLinePhone}, new=${payload?.newLinePhone ?? "—"})`,
+    );
+  }
+
+  /**
+   * Emite evento para operadores da mesma linha (modo compartilhado),
+   * COM DEDUPE de sockets que já estão na room da conversa.
+   *
+   * Histórico do bug:
+   *   `handleSendMessage` chamava (a) `client.to(room).emit('new_message')`
+   *   + (b) `emitToLineOperators(...)`. Operadores que estivessem com o
+   *   chat aberto recebiam 2 balões idênticos.
+   *
+   * Agora:
+   *   - Se o evento tiver um `roomToDedupe`, fazemos `fetchSockets` da
+   *     room e pulamos qualquer socket que já receberá o disparo via
+   *     `client.to(room).emit(...)`.
+   *   - Se não tiver, mantemos o comportamento legado (1 cópia por
+   *     operador online, exceto `excludeUserId`).
    */
   private async emitToLineOperators(
     lineId: number,
     event: string,
     data: any,
     excludeUserId?: number,
+    roomToDedupe?: string,
   ) {
     try {
-      // ISOLAMENTO: Verificar se modo compartilhado está ativo
       const controlPanel = await this.controlPanelService.findOne();
       const sharedLineMode = controlPanel?.sharedLineMode ?? false;
 
       if (!sharedLineMode) {
         console.log(
-          `🔒 [WebSocket] Modo não-compartilhado: mensagem enviada NÃO será replicada para outros operadores da linha ${lineId}`,
+          `🔒 [WebSocket] Modo não-compartilhado: '${event}' NÃO replicado na linha ${lineId}`,
         );
-        return; // Não emitir para outros operadores
+        return;
       }
 
-      // Buscar todos os operadores vinculados à linha
+      // Snapshot dos sockets já cobertos pelo emit-room (se houver).
+      let socketIdsInRoom: Set<string> = new Set();
+      if (roomToDedupe) {
+        try {
+          const inRoom = await this.server.in(roomToDedupe).fetchSockets();
+          socketIdsInRoom = new Set(inRoom.map((s) => s.id));
+        } catch (err: any) {
+          console.warn(
+            `⚠️ [WebSocket] fetchSockets falhou (${roomToDedupe}): ${err?.message}`,
+          );
+        }
+      }
+
       const lineOperators = await (this.prisma as any).lineOperator.findMany({
         where: { lineId },
         include: { user: true },
       });
 
       console.log(
-        `📢 [WebSocket] Emitindo '${event}' para ${lineOperators.length} operador(es) da linha ${lineId} (modo compartilhado)`,
+        `📢 [WebSocket] '${event}' para linha ${lineId}: ${lineOperators.length} operador(es) candidatos`,
       );
 
-      // Emitir para cada operador online (exceto quem enviou, se especificado)
+      let delivered = 0;
+      let dedupedByRoom = 0;
+      let skippedExcluded = 0;
+      let skippedOffline = 0;
+
       for (const lo of lineOperators) {
         if (excludeUserId && lo.userId === excludeUserId) {
-          continue; // Pular o operador que enviou (já recebeu message-sent)
+          skippedExcluded++;
+          continue;
         }
-
-        if (lo.user.status === "Online") {
-          const socketId = this.connectedUsers.get(lo.userId);
-          if (socketId) {
-            console.log(
-              `  → Emitindo para ${lo.user.name} (userId: ${lo.userId})`,
-            );
-            this.server.to(socketId).emit(event, data);
-          }
+        if (lo.user.status !== "Online") {
+          skippedOffline++;
+          continue;
         }
+        const socketId = this.connectedUsers.get(lo.userId);
+        if (!socketId) {
+          skippedOffline++;
+          continue;
+        }
+        if (socketIdsInRoom.has(socketId)) {
+          dedupedByRoom++;
+          continue; // já recebeu via room
+        }
+        this.server.to(socketId).emit(event, data);
+        delivered++;
       }
+
+      console.log(
+        `  ↳ entregue=${delivered}, dedup-by-room=${dedupedByRoom}, excluído=${skippedExcluded}, offline=${skippedOffline}`,
+      );
     } catch (error: any) {
       console.error(
         `❌ [WebSocket] Erro ao emitir para operadores da linha ${lineId}:`,

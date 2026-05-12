@@ -1163,8 +1163,21 @@ export class LinesService {
             `🔄 [handleBannedLine] Conversas do operador ${operator.name} atualizadas para usar a nova linha ${availableLine.phone}`,
           );
 
-          // NÃO notificar o operador - ele não precisa saber que a linha foi banida
-          // As conversas continuam aparecendo normalmente
+          // Notificar o operador em tempo real (modal-fantasma de Linha Banida).
+          // O front decide se mostra a lista de contatos para repescagem.
+          try {
+            this.websocketGateway.notifyLineBannedToOperator(operatorId, {
+              bannedLinePhone: line.phone,
+              newLinePhone: availableLine.phone,
+              contactsToRecall: contactsByOperator.get(operatorId) ?? [],
+              message: `Sua linha ${line.phone} foi banida. Você foi realocado para ${availableLine.phone}.`,
+            });
+          } catch (notifyErr: any) {
+            console.error(
+              `❌ [handleBannedLine] Falha ao notificar operador ${operatorId} via WebSocket:`,
+              notifyErr?.message,
+            );
+          }
         } else {
           console.warn(
             `⚠️ [handleBannedLine] Nenhuma linha disponível para substituir a linha banida para o operador ${operator?.name || operatorId}`,
@@ -1192,27 +1205,26 @@ export class LinesService {
             );
           }
 
-          // Notificar operador via WebSocket
+          // Notificar operador via WebSocket — mesmo evento 'line-banned'
+          // que o caminho de sucesso, com `newLinePhone: null` indicando
+          // ausência de substituta. O frontend já trata esse caso.
+          //
+          // OBS: substituímos o antigo emit ad-hoc de 'line-lost' que tinha
+          // bug (iterava `connectedUsers` como Map<number, Socket>, mas é
+          // Map<number, string>, então `socket.emit(...)` nunca era válido
+          // e o evento nunca chegava ao frontend). Além disso 'line-lost'
+          // não era consumido em lugar nenhum no frontend.
           try {
-            const operatorSockets = Array.from(
-              this.websocketGateway["connectedUsers"]?.entries() || [],
-            )
-              .filter(
-                ([_, socket]: [any, any]) =>
-                  socket.data?.user?.id === operatorId,
-              )
-              .map(([_, socket]: [any, any]) => socket);
-
-            for (const socket of operatorSockets) {
-              socket.emit("line-lost", {
-                message:
-                  "Sua linha foi removida e não há linha disponível no momento. Você será notificado quando uma nova linha for atribuída.",
-              });
-            }
-          } catch (error) {
+            this.websocketGateway.notifyLineBannedToOperator(operatorId, {
+              bannedLinePhone: line.phone,
+              newLinePhone: null,
+              contactsToRecall: contactsByOperator.get(operatorId) ?? [],
+              message: `Sua linha ${line.phone} foi banida e nenhuma linha substituta está disponível.`,
+            });
+          } catch (notifyErr: any) {
             console.error(
-              `❌ [handleBannedLine] Erro ao notificar operador:`,
-              error,
+              `❌ [handleBannedLine] Falha ao notificar operador ${operatorId} via WebSocket:`,
+              notifyErr?.message,
             );
           }
 
