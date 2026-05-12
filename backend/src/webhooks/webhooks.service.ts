@@ -52,10 +52,17 @@ export class WebhooksService {
           return { status: "ignored", reason: "No message data or key" };
         }
 
-        // Ignorar mensagens enviadas pelo próprio bot
-        if (message.key.fromMe) {
-          return { status: "ignored", reason: "Message from self" };
-        }
+        // ─────────────────────────────────────────────────────────────────
+        // SHARED INBOX — `fromMe: true` deve ser PROCESSADO, não descartado.
+        //
+        // Antes existia um early return aqui ("ignored: Message from self").
+        // No modelo de número único, mensagens enviadas pelo Celular do
+        // dono / WhatsApp Web também devem aparecer no histórico do chat
+        // (com `sender: 'operator'` e `userName: 'Celular/WhatsApp Web'`),
+        // para que todos os operadores vejam exatamente o que foi enviado
+        // por fora do sistema. Removemos o descarte e seguimos o fluxo.
+        // ─────────────────────────────────────────────────────────────────
+        const fromMe = !!message.key.fromMe;
 
         // Verificar se é mensagem de grupo
         const isGroup = message.key.remoteJid?.includes("@g.us") || false;
@@ -67,7 +74,8 @@ export class WebhooksService {
         let participantName: string | null = null;
 
         if (isGroup) {
-          // Em grupos, o remoteJid é o ID do grupo
+          // Em grupos, o remoteJid SEMPRE é o ID do grupo (independente
+          // de fromMe). O alvo da conversa é o grupo.
           from = groupId || "";
 
           // Para grupos, iniciar com nome padrão e buscar o nome real via Evolution API
@@ -75,7 +83,13 @@ export class WebhooksService {
 
           // O participante que enviou está em message.participant ou message.key.participant
           const participant = message.participant || message.key.participant;
-          if (participant) {
+          if (fromMe) {
+            // Mensagem enviada do próprio aparelho/Web para um grupo:
+            // marcamos o `participantName` como nulo (não é "um cliente
+            // específico falando no grupo") — quem o operador atendeu vai
+            // ler no balão `userName` do lado da bolha de operador.
+            participantName = null;
+          } else if (participant) {
             participantName =
               message.pushName ||
               participant
@@ -84,10 +98,14 @@ export class WebhooksService {
                 .replace("@lid", "");
           }
           console.log(
-            `👥 Mensagem de grupo detectada: ${groupName} (${groupId}), participante: ${participantName}`,
+            `👥 Mensagem de grupo detectada: ${groupName} (${groupId}), participante: ${participantName}, fromMe: ${fromMe}`,
           );
         } else {
-          // Extrair número do remetente (remoteJid quando fromMe=false é o remetente)
+          // remoteJid:
+          //   - fromMe=false → JID do remetente (o cliente)
+          //   - fromMe=true  → JID do destinatário (o cliente do outro lado)
+          // Em ambos os casos é o ID do cliente — exatamente o que queremos
+          // para `contactPhone`.
           from =
             message.key.remoteJid
               ?.replace("@s.whatsapp.net", "")
@@ -397,8 +415,12 @@ export class WebhooksService {
           );
         }
 
-        // Registrar resposta do cliente (reseta repescagem) - apenas para contatos individuais
-        if (!isGroup) {
+        // Registrar resposta do cliente (reseta repescagem) - apenas para
+        // contatos individuais INBOUND (mensagens vindas do cliente).
+        // `fromMe=true` é um envio nosso (Celular/Web), não conta como
+        // resposta do cliente — não devemos resetar repescagem nem rodar
+        // CPC/blocklist.
+        if (!isGroup && !fromMe) {
           await this.controlPanelService.registerClientResponse(from);
 
           // ─── DUPLO CPC INBOUND ───
@@ -449,9 +471,12 @@ export class WebhooksService {
           // ─── FIM DUPLO CPC INBOUND ───
         }
 
-        // Verificar frases de bloqueio automático - apenas para contatos individuais
+        // Verificar frases de bloqueio automático - apenas para contatos
+        // individuais INBOUND. `fromMe=true` é nosso envio externo: não
+        // faz sentido bloquear o próprio cliente porque NÓS escrevemos
+        // uma palavra-chave.
         let blockedByPhrase = false;
-        if (!isGroup) {
+        if (!isGroup && !fromMe) {
           const isBlockPhrase =
             await this.controlPanelService.checkBlockPhrases(
               messageText,
@@ -478,10 +503,20 @@ export class WebhooksService {
         const sharedLineMode = controlPanel?.sharedLineMode ?? false;
 
         // Distribuir mensagem entre os operadores da linha
-        // No modo compartilhado, atribuir para todos os usuários da linha
+        // No modo compartilhado, atribuir para todos os usuários da linha.
+        //
+        // IMPORTANTE: quando `fromMe=true` (mensagem externa enviada pelo
+        // Celular/WhatsApp Web), NÃO atribuímos a um operador — não é uma
+        // mensagem entrante aguardando atendimento. A conversa será salva
+        // com `userId=null` e `userName='Celular/WhatsApp Web'`.
         let finalOperatorId: number | null = null;
 
-        if (sharedLineMode && isGroup) {
+        if (fromMe) {
+          // Pular toda a alocação de operador para envios externos.
+          console.log(
+            `🪪 [Webhook] Mensagem fromMe (envio externo) — não atribuindo operador interno.`,
+          );
+        } else if (sharedLineMode && isGroup) {
           // No modo compartilhado com grupos, atribuir para o primeiro operador/admin online da linha
           // Mas a mensagem será enviada para todos via WebSocket
           const anyOnlineUser = line.operators.find(
@@ -511,8 +546,10 @@ export class WebhooksService {
           finalOperatorId = assignedOperatorId;
         }
 
-        // Se não encontrou operador, tentar encontrar qualquer operador/admin online da linha
-        if (!finalOperatorId && line.operators && line.operators.length > 0) {
+        // Se não encontrou operador, tentar encontrar qualquer operador/admin
+        // online da linha. (Pular para `fromMe`: o envio externo não precisa
+        // de operador atribuído.)
+        if (!fromMe && !finalOperatorId && line.operators && line.operators.length > 0) {
           // Buscar qualquer usuário online da linha (operador, admin ou supervisor)
           const anyOnlineUser = line.operators.find(
             (lo) =>
@@ -534,8 +571,15 @@ export class WebhooksService {
           }
         }
 
-        // Se ainda não encontrou operador online, adicionar à fila de mensagens
-        if (!finalOperatorId) {
+        // Se ainda não encontrou operador online, adicionar à fila de mensagens.
+        //
+        // IMPORTANTE: pular esta etapa quando `fromMe=true`. Mensagens
+        // enviadas pelo Celular/WhatsApp Web não estão "aguardando
+        // atendimento" — elas SÃO o atendimento que aconteceu por fora
+        // do sistema. Em vez de enfileirar, prosseguimos para criar a
+        // Conversation com `userId=null` para que o histórico fique
+        // completo no painel.
+        if (!finalOperatorId && !fromMe) {
           console.log(
             `📥 [Webhook] Nenhum operador online, adicionando mensagem à fila...`,
           );
@@ -584,19 +628,37 @@ export class WebhooksService {
               )
             : undefined;
 
+        // ─────────────────────────────────────────────────────────────────
+        // Decisão de autoria.
+        // - Mensagem inbound (cliente → nós): sender='contact', userName
+        //   exibe o operador atribuído (para a UI do chat).
+        // - Mensagem `fromMe=true` (envio externo via Celular/WhatsApp Web):
+        //   sender='operator', userName='Celular/WhatsApp Web'.
+        //   `userId` permanece null — não há um operador interno conhecido
+        //   por trás desse envio externo.
+        // ─────────────────────────────────────────────────────────────────
+        const senderForConversation: "contact" | "operator" = fromMe
+          ? "operator"
+          : "contact";
+        const operatorNameFromLine = finalOperatorId
+          ? line.operators.find((lo) => lo.userId === finalOperatorId)?.user
+              .name || null
+          : null;
+        const userNameForConversation = fromMe
+          ? "Celular/WhatsApp Web"
+          : operatorNameFromLine;
+        const userIdForConversation = fromMe ? null : finalOperatorId;
+
         // Criar conversa
         const conversation = await this.conversationsService.create({
           contactName: isGroup ? groupName || contact.name : contact.name, // Para grupos, usar nome do grupo
           contactPhone: from,
           segment: line.segment,
-          userName: finalOperatorId
-            ? line.operators.find((lo) => lo.userId === finalOperatorId)?.user
-                .name || null
-            : null,
+          userName: userNameForConversation,
           userLine: line.id,
-          userId: finalOperatorId, // Operador específico que vai atender (ou null se não houver)
+          userId: userIdForConversation,
           message: messageText,
-          sender: "contact",
+          sender: senderForConversation,
           messageType,
           mediaUrl,
           isGroup,
@@ -1222,10 +1284,19 @@ export class WebhooksService {
           const operatorName = onlineOperator?.user.name || null;
 
           // Importar mensagens
+          //
+          // SHARED INBOX — espelhamento do MESSAGES_UPSERT:
+          // Removido o early return `if (msg.key?.fromMe) continue;` que
+          // existia aqui. Agora mensagens enviadas pelo Celular/WhatsApp
+          // Web também são importadas no histórico inicial, com:
+          //   - sender   = 'operator'
+          //   - userName = 'Celular/WhatsApp Web'
+          //   - userId   = null  (não há operador interno responsável)
+          // Isso garante que ao escanear o QR Code o painel mostre o
+          // histórico real, incluindo respostas dadas por fora do sistema.
           for (const msg of messages) {
             try {
-              // Ignorar mensagens do próprio bot
-              if (msg.key?.fromMe) continue;
+              const isFromMe = !!msg.key?.fromMe;
 
               const messageText =
                 msg.message?.conversation ||
@@ -1234,7 +1305,7 @@ export class WebhooksService {
                 "Mensagem importada";
 
               const messageType = this.getMessageType(msg.message);
-              const sender = msg.key?.fromMe ? "operator" : "contact";
+              const sender = isFromMe ? "operator" : "contact";
               const datetime = msg.messageTimestamp
                 ? new Date(Number(msg.messageTimestamp) * 1000)
                 : new Date();
@@ -1257,14 +1328,22 @@ export class WebhooksService {
                 continue; // Mensagem já existe, pular
               }
 
+              // Autoria coerente com MESSAGES_UPSERT:
+              //   - fromMe=true  → envio externo (Celular/WhatsApp Web), userId=null
+              //   - fromMe=false → mensagem inbound do cliente, vinculada ao operador online
+              const userNameForConversation = isFromMe
+                ? "Celular/WhatsApp Web"
+                : operatorName;
+              const userIdForConversation = isFromMe ? null : operatorId;
+
               // Criar conversa vinculada ao operador online (se houver)
               await this.conversationsService.create({
                 contactName: contactName,
                 contactPhone: isGroup ? remoteJid : contactPhone,
                 segment: line.segment,
-                userName: operatorName,
+                userName: userNameForConversation,
                 userLine: lineId,
-                userId: operatorId, // Vincular ao operador online
+                userId: userIdForConversation,
                 message: messageText,
                 sender: sender as any,
                 messageType,

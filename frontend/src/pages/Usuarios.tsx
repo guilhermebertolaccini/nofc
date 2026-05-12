@@ -536,33 +536,38 @@ export default function Usuarios() {
             <SelectContent>
               {lines
                 .filter((line) => {
-                  // Filtrar apenas linhas ATIVAS
-                  if (line.lineStatus !== "active") return false;
-
-                  // Filtrar apenas linhas SEM OPERADORES VINCULADOS (checar dados do banco)
-                  // Se a API retorna 'operators', usamos. Se não, fallback para checagem local.
-                  if (line.operators && Array.isArray(line.operators)) {
-                    return line.operators.length === 0;
-                  }
-
-                  // Fallback (menos confiável) se o backend não retornasse operators
-                  const isLineInUse = users.some(
-                    (user) => user.line === line.id
-                  );
-                  return !isLineInUse;
+                  // SHARED INBOX:
+                  //   No modelo de número único, várias operadores podem
+                  //   compartilhar a mesma linha. Removemos a antiga regra
+                  //   que excluía linhas com `operators.length > 0` ou que
+                  //   já apareciam em `users[].line`. Agora qualquer linha
+                  //   ATIVA é elegível para vínculo.
+                  return line.lineStatus === "active";
                 })
-                .map((line) => (
-                  <SelectItem key={line.id} value={String(line.id)}>
-                    {line.phone}{" "}
-                    {line.segmentName ? `[${line.segmentName}]` : ""}
-                    {line.oficial ? " (Oficial)" : ` (${line.evolutionName})`}
-                  </SelectItem>
-                ))}
+                .map((line) => {
+                  const operatorsCount = Array.isArray(line.operators)
+                    ? line.operators.length
+                    : 0;
+                  return (
+                    <SelectItem key={line.id} value={String(line.id)}>
+                      {line.phone}{" "}
+                      {line.segmentName ? `[${line.segmentName}]` : ""}
+                      {line.oficial ? " (Oficial)" : ` (${line.evolutionName})`}
+                      {operatorsCount > 0 && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          ({operatorsCount} operador
+                          {operatorsCount > 1 ? "es" : ""} vinculado
+                          {operatorsCount > 1 ? "s" : ""})
+                        </span>
+                      )}
+                    </SelectItem>
+                  );
+                })}
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Define qual linha será usada para envio de mensagens (apenas linhas
-            sem vínculo)
+            Define qual linha será usada para envio de mensagens. No modo
+            Shared Inbox, várias operadores podem compartilhar a mesma linha.
           </p>
         </div>
       )}

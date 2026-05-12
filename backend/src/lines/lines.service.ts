@@ -1558,12 +1558,39 @@ export class LinesService {
     );
   }
 
+  /**
+   * Retorna as linhas ativas elegíveis para vínculo a um operador.
+   *
+   * SHARED INBOX:
+   *   No modo de número único (`sharedLineMode = true`, hoje permanente
+   *   via `SHARED_INBOX_LOCK`), a mesma linha pode receber N operadores
+   *   simultâneos. Portanto:
+   *     - NÃO filtramos por `linkedTo: null` (esse é um vínculo 1-1 legacy).
+   *     - NÃO filtramos por `operators.length` aqui — quem precisa dessa
+   *       informação para UX é o frontend, que recebe `operators` no payload.
+   *
+   *   Fora do shared mode, mantemos o comportamento histórico
+   *   (`linkedTo: null`) por compatibilidade.
+   */
   async getAvailableLines(segment: number) {
+    const controlPanel = await this.controlPanelService.findOne();
+    const sharedLineMode = controlPanel?.sharedLineMode ?? false;
+
+    const where: any = {
+      lineStatus: "active",
+      segment,
+    };
+
+    if (!sharedLineMode) {
+      where.linkedTo = null; // Legacy: só linhas sem vínculo 1-1
+    }
+
     return this.prisma.linesStock.findMany({
-      where: {
-        lineStatus: "active",
-        segment,
-        linkedTo: null,
+      where,
+      include: {
+        operators: {
+          select: { userId: true },
+        },
       },
     });
   }

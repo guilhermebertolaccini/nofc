@@ -259,30 +259,44 @@ export default function Atendimento() {
           }
         });
 
-        // Update selected conversation if it's the same contact (usando ref)
-        if (selectedPhoneRef.current === newMsg.contactPhone) {
-          setSelectedConversation((prev) => {
-            if (!prev) return null;
-            // ⛔ DEDUPE: mesmo id já presente → não reinserir.
-            if (
-              newMsg.id != null &&
-              prev.messages.some((m) => m.id === newMsg.id)
-            ) {
-              return prev;
-            }
-            return {
-              ...prev,
-              messages: [...prev.messages, newMsg].sort(
-                (a, b) =>
-                  new Date(a.datetime).getTime() -
-                  new Date(b.datetime).getTime(),
-              ),
-              lastMessage: newMsg.message,
-              lastMessageTime: newMsg.datetime,
-              isFromContact: newMsg.sender === "contact",
-            };
-          });
-        }
+        // ⛡ Guard de roteamento: só inserir a newMsg no chat ABERTO
+        // (`selectedConversation`) se ela for da MESMA conversa.
+        //
+        // Bug histórico: anteriormente o append era condicionado apenas
+        // por `selectedPhoneRef.current === newMsg.contactPhone` por fora
+        // do `setSelectedConversation`. Em raras condições de troca rápida
+        // de chat / refs stale, uma mensagem da conversa B podia "vazar"
+        // para o chat A que estava aberto. Agora a comparação é refeita
+        // DENTRO do updater funcional, usando `prev.contactPhone` — esse
+        // valor é sempre o estado mais recente no momento da atualização,
+        // imune a closures stale ou refs desatualizadas.
+        setSelectedConversation((prev) => {
+          if (!prev) return prev;
+          // Se o chat aberto NÃO é o desta mensagem, apenas atualizar a
+          // sidebar (já feito acima por setConversations) e preservar o
+          // chat aberto intacto.
+          if (prev.contactPhone !== newMsg.contactPhone) {
+            return prev;
+          }
+          // Dedupe por id (defesa adicional contra reentrega de evento).
+          if (
+            newMsg.id != null &&
+            prev.messages.some((m) => m.id === newMsg.id)
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            messages: [...prev.messages, newMsg].sort(
+              (a, b) =>
+                new Date(a.datetime).getTime() -
+                new Date(b.datetime).getTime(),
+            ),
+            lastMessage: newMsg.message,
+            lastMessageTime: newMsg.datetime,
+            isFromContact: newMsg.sender === "contact",
+          };
+        });
       }
     },
     [playMessageSound],
@@ -360,29 +374,33 @@ export default function Atendimento() {
           }
         });
 
-        // Atualizar conversa selecionada se for a mesma (usando ref)
-        if (selectedPhoneRef.current === newMsg.contactPhone) {
-          setSelectedConversation((prev) => {
-            if (!prev) return null;
-            // ⛔ DEDUPE por id
-            if (
-              newMsg.id != null &&
-              prev.messages.some((m) => m.id === newMsg.id)
-            ) {
-              return prev;
-            }
-            return {
-              ...prev,
-              messages: [...prev.messages, newMsg].sort(
-                (a, b) =>
-                  new Date(a.datetime).getTime() -
-                  new Date(b.datetime).getTime(),
-              ),
-              lastMessage: newMsg.message,
-              lastMessageTime: newMsg.datetime,
-            };
-          });
-        }
+        // ⛡ Guard de roteamento: ver comentário longo no listener
+        // WS_EVENTS.NEW_MESSAGE. Mesma defesa aplicada aqui — comparamos
+        // `prev.contactPhone` dentro do updater funcional para impedir que
+        // uma confirmação de envio caia no chat errado quando o operador
+        // trocou de conversa entre o emit e o ack.
+        setSelectedConversation((prev) => {
+          if (!prev) return prev;
+          if (prev.contactPhone !== newMsg.contactPhone) {
+            return prev;
+          }
+          if (
+            newMsg.id != null &&
+            prev.messages.some((m) => m.id === newMsg.id)
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            messages: [...prev.messages, newMsg].sort(
+              (a, b) =>
+                new Date(a.datetime).getTime() -
+                new Date(b.datetime).getTime(),
+            ),
+            lastMessage: newMsg.message,
+            lastMessageTime: newMsg.datetime,
+          };
+        });
       }
     },
     [playSuccessSound, isNewConversationOpen],
