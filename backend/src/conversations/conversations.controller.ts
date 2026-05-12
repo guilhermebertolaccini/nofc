@@ -27,6 +27,7 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { Role } from "@prisma/client";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { PrismaService } from "../prisma.service";
+import { ControlPanelService } from "../control-panel/control-panel.service";
 import { Response } from "express";
 import PDFDocument from "pdfkit";
 import { Readable } from "stream";
@@ -36,8 +37,29 @@ import { Readable } from "stream";
 export class ConversationsController {
   constructor(
     private readonly conversationsService: ConversationsService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    private readonly controlPanelService: ControlPanelService
   ) { }
+
+  /**
+   * Descobre a linha atual do operador (Shared Inbox).
+   * Prioridade: `user.line` (campo legado no JWT) > LineOperator (fonte da
+   * verdade). Devolve `null` se o operador não estiver vinculado a nenhuma
+   * linha — caso em que o filtro de visibilidade no shared mode degenera
+   * para "todas as conversas do segmento do operador".
+   */
+  private async resolveOperatorLineId(user: any): Promise<number | null> {
+    if (user?.line) return user.line;
+    try {
+      const lo = await this.prisma.lineOperator.findFirst({
+        where: { userId: user.id },
+        select: { lineId: true },
+      });
+      return lo?.lineId ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   @Post()
   @Roles(Role.admin, Role.supervisor, Role.operator)
@@ -95,11 +117,28 @@ export class ConversationsController {
       });
     }
 
-    // OPERADOR: SEMPRE retorna apenas suas próprias conversas (filtradas por userId)
-    // NUNCA retorna conversas de outros operadores, mesmo que estejam na mesma linha
+    // OPERADOR — visibilidade depende do Shared Inbox:
+    //   - sharedLineMode = true  → vê TODAS as conversas da linha
+    //                              compartilhada (mesmo segmento). Necessário
+    //                              para que grupos e leads atribuídos a outro
+    //                              operador continuem aparecendo.
+    //   - sharedLineMode = false → modo legado: vê apenas conversas com seu
+    //                              userId (isolamento estrito).
+    const controlPanel = await this.controlPanelService.findOne();
+    const sharedLineMode = !!controlPanel?.sharedLineMode;
+    const lineId = await this.resolveOperatorLineId(user);
+
     console.log(
-      `📋 [GET /conversations/active] Operador ${user.name} - retornando APENAS suas conversas (userId: ${user.id})`
+      `📋 [GET /conversations/active] Operador ${user.name} - sharedLineMode=${sharedLineMode}, lineId=${lineId}, segment=${user.segment}, userId=${user.id}`
     );
+
+    if (sharedLineMode) {
+      return this.conversationsService.findActiveConversations(
+        lineId ?? undefined,
+        undefined,
+        { sharedLineMode: true, segment: user.segment ?? null }
+      );
+    }
     return this.conversationsService.findActiveConversations(
       undefined,
       user.id
@@ -125,11 +164,22 @@ export class ConversationsController {
       });
     }
 
-    // OPERADOR: SEMPRE retorna apenas suas próprias conversas (filtradas por userId)
-    // NUNCA retorna conversas de outros operadores, mesmo que estejam na mesma linha
+    // OPERADOR — mesma semântica do /active (ver bloco acima).
+    const controlPanel = await this.controlPanelService.findOne();
+    const sharedLineMode = !!controlPanel?.sharedLineMode;
+    const lineId = await this.resolveOperatorLineId(user);
+
     console.log(
-      `📋 [GET /conversations/tabulated] Operador ${user.name} - retornando APENAS suas conversas (userId: ${user.id})`
+      `📋 [GET /conversations/tabulated] Operador ${user.name} - sharedLineMode=${sharedLineMode}, lineId=${lineId}, segment=${user.segment}, userId=${user.id}`
     );
+
+    if (sharedLineMode) {
+      return this.conversationsService.findTabulatedConversations(
+        lineId ?? undefined,
+        undefined,
+        { sharedLineMode: true, segment: user.segment ?? null }
+      );
+    }
     return this.conversationsService.findTabulatedConversations(
       undefined,
       user.id

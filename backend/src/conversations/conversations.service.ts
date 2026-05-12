@@ -136,18 +136,48 @@ export class ConversationsService {
     });
   }
 
-  async findActiveConversations(userLine?: number, userId?: number) {
+  /**
+   * Lista conversas ATIVAS (não tabuladas) visíveis para um operador.
+   *
+   * Shared Inbox de Número Único:
+   *   Quando `opts.sharedLineMode = true`, NÃO se filtra por `userId`. Isso
+   *   é fundamental porque o webhook inbound atribui `userId` para apenas
+   *   UM operador (o primeiro online da linha). Sem essa flexibilização,
+   *   os demais operadores ficariam sem ver mensagens de grupos e leads
+   *   compartilhados — exatamente o Bug 1 que estava em produção.
+   *
+   *   No shared mode, o filtro coerente é por `userLine` (a linha única
+   *   compartilhada) e/ou por `segment` (defesa por segmento, se aplicável).
+   *
+   * Modo legado:
+   *   Mantém a lógica original (filtra por `userId` se fornecido, senão
+   *   `userLine`). Preservado para compatibilidade com chamadas antigas
+   *   que ainda não foram migradas.
+   */
+  async findActiveConversations(
+    userLine?: number,
+    userId?: number,
+    opts?: { sharedLineMode?: boolean; segment?: number | null },
+  ) {
     const where: any = {
       tabulation: null,
     };
 
-    // IMPORTANTE: Para operadores, buscar apenas por userId (não por userLine)
-    // Isso permite que as conversas continuem aparecendo mesmo se a linha foi banida
-    if (userId) {
-      where.userId = userId;
-    } else if (userLine) {
-      // Fallback: se não tiver userId, usar userLine (para compatibilidade)
-      where.userLine = userLine;
+    if (opts?.sharedLineMode) {
+      // Shared Inbox: visibilidade pela LINHA, não pelo operador atribuído
+      if (userLine) {
+        where.userLine = userLine;
+      }
+      if (opts.segment !== undefined && opts.segment !== null) {
+        where.segment = opts.segment;
+      }
+    } else {
+      // Modo legado: prioriza userId, com fallback para userLine
+      if (userId) {
+        where.userId = userId;
+      } else if (userLine) {
+        where.userLine = userLine;
+      }
     }
 
     // Retornar TODAS as mensagens não tabuladas (SEM LIMITE - histórico completo)
@@ -163,18 +193,32 @@ export class ConversationsService {
     return conversations;
   }
 
-  async findTabulatedConversations(userLine?: number, userId?: number) {
+  /**
+   * Lista conversas TABULADAS visíveis para um operador.
+   * Mesma semântica de Shared Inbox descrita em `findActiveConversations`.
+   */
+  async findTabulatedConversations(
+    userLine?: number,
+    userId?: number,
+    opts?: { sharedLineMode?: boolean; segment?: number | null },
+  ) {
     const where: any = {
       tabulation: { not: null },
     };
 
-    // IMPORTANTE: Para operadores, buscar apenas por userId (não por userLine)
-    // Isso permite que as conversas tabuladas continuem aparecendo mesmo se a linha foi banida
-    if (userId) {
-      where.userId = userId;
-    } else if (userLine) {
-      // Fallback: se não tiver userId, usar userLine (para compatibilidade)
-      where.userLine = userLine;
+    if (opts?.sharedLineMode) {
+      if (userLine) {
+        where.userLine = userLine;
+      }
+      if (opts.segment !== undefined && opts.segment !== null) {
+        where.segment = opts.segment;
+      }
+    } else {
+      if (userId) {
+        where.userId = userId;
+      } else if (userLine) {
+        where.userLine = userLine;
+      }
     }
 
     // Retornar TODAS as mensagens tabuladas (o frontend vai agrupar)

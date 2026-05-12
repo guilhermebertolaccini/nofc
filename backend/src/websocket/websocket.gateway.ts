@@ -430,9 +430,20 @@ export class WebsocketGateway
 
     if (!user) {
       console.error("❌ [WebSocket] Usuário não autenticado");
-      return { error: "Usuário não autenticado" };
+      return this.replyError(client, "Usuário não autenticado");
     }
 
+    // ===================================================================
+    // TRY/CATCH RAIZ — SHARED INBOX (Bug 2 fix)
+    // -------------------------------------------------------------------
+    // Garante que QUALQUER exceção não tratada nas etapas preliminares
+    // (busca de linha, healthcheck, lineAssignmentService, Prisma, etc.)
+    // resulte em um `message-error` para o frontend, evitando loading
+    // infinito. O try interno mais abaixo continua existindo e cobrindo
+    // a fase de envio + retry, mas este wrap externo é a rede de
+    // segurança final.
+    // ===================================================================
+    try {
     // Buscar nome do segmento para log
     let userSegmentName = "Sem Segmento";
     if (user.segment) {
@@ -518,26 +529,29 @@ export class WebsocketGateway
                   console.error(
                     `❌ [WebSocket] Linha ${reallocationResult.lineId} não encontrada após realocação`,
                   );
-                  return {
-                    error:
-                      "Não foi possível alocar linha ativa. Tente novamente.",
-                  };
+                  return this.replyError(
+                    client,
+                    "Não foi possível alocar linha ativa. Tente novamente.",
+                  );
                 }
               } else {
                 console.error(
                   `❌ [WebSocket] Não foi possível realocar linha para operador ${user.name}: ${reallocationResult.reason}`,
                 );
-                return {
-                  error:
-                    "Não foi possível alocar linha ativa. Tente novamente.",
-                };
+                return this.replyError(
+                  client,
+                  "Não foi possível alocar linha ativa. Tente novamente.",
+                );
               }
             } catch (error: any) {
               console.error(
                 `❌ [WebSocket] Erro ao realocar linha antes de enviar mensagem:`,
                 error.message,
               );
-              return { error: "Erro ao verificar linha. Tente novamente." };
+              return this.replyError(
+                client,
+                "Erro ao verificar linha. Tente novamente.",
+              );
             }
           }
         }
@@ -568,13 +582,15 @@ export class WebsocketGateway
 
         // Se falhar (ex: fila, sem linhas), retornar erro informativo
         if (assignmentResult.reason?.toLowerCase().includes("fila")) {
-          return {
-            error: "Você foi adicionado à fila de espera. Aguarde sua vez.",
-          };
+          return this.replyError(
+            client,
+            "Você foi adicionado à fila de espera. Aguarde sua vez.",
+          );
         } else {
-          return {
-            error: "Aguarde alocação de linha (nenhuma disponível no momento).",
-          };
+          return this.replyError(
+            client,
+            "Aguarde alocação de linha (nenhuma disponível no momento).",
+          );
         }
       }
     }
@@ -586,9 +602,10 @@ export class WebsocketGateway
       console.error(
         "❌ [WebSocket] Apenas administradores podem usar modo teste",
       );
-      return {
-        error: "Apenas administradores podem usar modo teste administrador",
-      };
+      return this.replyError(
+        client,
+        "Apenas administradores podem usar modo teste administrador",
+      );
     }
 
     if (isAdminTest) {
@@ -610,7 +627,10 @@ export class WebsocketGateway
 
       if (!fullUser?.oneToOneActive) {
         console.error("❌ [WebSocket] Operador sem permissão para 1x1");
-        return { error: "Você não tem permissão para iniciar conversas 1x1" };
+        return this.replyError(
+          client,
+          "Você não tem permissão para iniciar conversas 1x1",
+        );
       }
     }
 
@@ -628,7 +648,10 @@ export class WebsocketGateway
           user.segment,
         );
         if (!cpcCheck.allowed) {
-          return { error: cpcCheck.reason };
+          return this.replyError(
+            client,
+            cpcCheck.reason || "Bloqueado pelas regras de CPC",
+          );
         }
 
         // Verificar repescagem
@@ -638,7 +661,10 @@ export class WebsocketGateway
           user.segment,
         );
         if (!repescagemCheck.allowed) {
-          return { error: repescagemCheck.reason };
+          return this.replyError(
+            client,
+            repescagemCheck.reason || "Bloqueado pelas regras de repescagem",
+          );
         }
 
         // Normalizar telefone (remover espaços, hífens, adicionar 55 se necessário)
@@ -652,7 +678,7 @@ export class WebsocketGateway
           data.contactPhone,
         );
         if (!phoneValidation) {
-          return { error: "Número de telefone inválido" };
+          return this.replyError(client, "Número de telefone inválido");
         }
       } else {
         console.log(
@@ -666,7 +692,7 @@ export class WebsocketGateway
       });
 
       if (!line || line.lineStatus !== "active") {
-        return { error: "Linha não disponível" };
+        return this.replyError(client, "Linha não disponível");
       }
 
       let evolution = await this.prisma.evolution.findUnique({
@@ -678,7 +704,7 @@ export class WebsocketGateway
       const canSend =
         await this.rateLimitingService.canSendMessage(currentLineId);
       if (!canSend) {
-        return { error: "Limite de mensagens atingido" };
+        return this.replyError(client, "Limite de mensagens atingido");
       }
 
       // Verificar se o segmento permite mensagem livre (APENAS para novas conversas 1x1)
@@ -697,10 +723,10 @@ export class WebsocketGateway
         // Verificar allowsFreeMessage (campo pode não existir ainda se Prisma não foi regenerado)
         const allowsFreeMessage = (segment as any)?.allowsFreeMessage;
         if (segment && allowsFreeMessage === false) {
-          return {
-            error:
-              "Este segmento não permite mensagens livres. Use apenas templates para enviar mensagens no 1x1.",
-          };
+          return this.replyError(
+            client,
+            "Este segmento não permite mensagens livres. Use apenas templates para enviar mensagens no 1x1.",
+          );
         }
 
         // ─── DUPLO CPC (apenas se segmento tem duploCpcEnabled) ───
@@ -710,10 +736,10 @@ export class WebsocketGateway
 
           // Validar campos obrigatórios
           if (!cpfToValidate || cpfToValidate.replace(/\D/g, '').length !== 3 || !contractToValidate) {
-            client.emit("message-error", {
-              error: "CPF (3 últimos dígitos) e Contrato são obrigatórios para esta carteira."
-            });
-            return { error: "CPF e Contrato obrigatórios." };
+            return this.replyError(
+              client,
+              "CPF (3 últimos dígitos) e Contrato são obrigatórios para esta carteira.",
+            );
           }
 
           const cleanCpf = cpfToValidate.replace(/\D/g, '');
@@ -723,10 +749,10 @@ export class WebsocketGateway
             cleanCpf, contractToValidate, userSegmentName
           );
           if (!isContractValid) {
-            client.emit("message-error", {
-              error: "Contrato não localizado ou baixado na API CPC."
-            });
-            return { error: "Contrato não localizado ou baixado na API CPC." };
+            return this.replyError(
+              client,
+              "Contrato não localizado ou baixado na API CPC.",
+            );
           }
 
           // 2. Checar se já existe acionamento CPC hoje
@@ -734,10 +760,10 @@ export class WebsocketGateway
             data.contactPhone, contractToValidate, userSegmentName
           );
           if (!canContact) {
-            client.emit("message-error", {
-              error: "Já existe CPC hoje para este cliente."
-            });
-            return { error: "Já existe CPC para este contrato e telefone hoje." };
+            return this.replyError(
+              client,
+              "Já existe CPC para este contrato e telefone hoje.",
+            );
           }
 
           console.log(`✅ [CPC] Validação CPC aprovada para ${data.contactPhone} (contrato: ${contractToValidate})`);
@@ -767,12 +793,13 @@ export class WebsocketGateway
                 (r?.jid && String(r.jid).split("@")[0] === numberForCheck),
             ) ?? (results.length === 1 ? results[0] : undefined);
           if (!entry || entry.exists === false) {
-            const errorMsg = "Este número não existe no WhatsApp.";
-            client.emit("message-error", { error: errorMsg });
             console.log(
               `🚫 [WebSocket] Número ${data.contactPhone} não existe no WhatsApp.`,
             );
-            return { error: errorMsg };
+            return this.replyError(
+              client,
+              "Este número não existe no WhatsApp.",
+            );
           }
           // Normalizar: usar número do JID (padrão WhatsApp). Contato será criado só depois, já com esse número.
           const canonicalPhone = entry.jid
@@ -1056,14 +1083,20 @@ export class WebsocketGateway
               templateMessageId: templateResult.templateMessageId,
             };
           } else {
-            return { error: templateResult.error || "Erro ao enviar template" };
+            return this.replyError(
+              client,
+              templateResult.error || "Erro ao enviar template",
+            );
           }
         } catch (templateError: any) {
           console.error(
             "❌ [WebSocket] Erro ao enviar template:",
             templateError,
           );
-          return { error: templateError.message || "Erro ao enviar template" };
+          return this.replyError(
+            client,
+            templateError.message || "Erro ao enviar template",
+          );
         }
       }
 
@@ -2008,9 +2041,45 @@ export class WebsocketGateway
         const errorMessage =
           recoveryResult.reason ||
           "Não foi possível enviar a mensagem. Tente novamente.";
-        client.emit("message-error", { error: errorMessage });
-        return { error: errorMessage };
+        return this.replyError(client, errorMessage);
       }
+    }
+    // ===================================================================
+    // FIM TRY/CATCH RAIZ — SHARED INBOX (Bug 2 fix)
+    // -------------------------------------------------------------------
+    // Este catch externo captura QUALQUER coisa que escape do fluxo
+    // (ex: erro síncrono em healthCheck, lineAssignmentService lançando,
+    // user.line inesperado, exceção do Prisma em validações pré-envio).
+    // Sem isso, o frontend ficaria com loading infinito.
+    // ===================================================================
+    } catch (rootErr: any) {
+      console.error(
+        `❌ [WebSocket] Exceção raiz em handleSendMessage - User: ${user?.name}, ContactPhone: ${data?.contactPhone}:`,
+        rootErr,
+      );
+      try {
+        await this.systemEventsService.logEvent(
+          EventType.API_ERROR,
+          EventModule.WEBSOCKET,
+          {
+            userId: user?.id,
+            userName: user?.name,
+            contactPhone: data?.contactPhone,
+            errorMessage: rootErr?.message,
+            stack: rootErr?.stack,
+            location: "handleSendMessage.rootCatch",
+          },
+          user?.id ?? null,
+          EventSeverity.ERROR,
+        );
+      } catch (_logErr) {
+        /* ignorar falha de logging */
+      }
+      return this.replyError(
+        client,
+        rootErr?.message ||
+          "Erro inesperado ao enviar mensagem. Tente novamente.",
+      );
     }
   }
 
@@ -2326,6 +2395,34 @@ export class WebsocketGateway
 
   private buildConversationRoom(contactPhone: string): string {
     return `conv:${(contactPhone || "").trim()}`;
+  }
+
+  /**
+   * SHARED INBOX – Resposta de erro segura para o cliente.
+   *
+   * Por que existe:
+   *   O cliente (Atendimento.tsx) faz `socket.emit('send-message', data)` SEM
+   *   callback de ACK. Isso significa que `return { error }` dentro de
+   *   handlers `@SubscribeMessage` é entregue como ACK e simplesmente
+   *   DESCARTADO pelo client. O frontend reseta o `isSending` apenas ao
+   *   receber os eventos 'message-sent' ou 'message-error' — qualquer
+   *   caminho que retorne erro sem emitir esse evento causa loading
+   *   infinito (Bug 2).
+   *
+   * Esta função garante AMBOS:
+   *   1. Emite 'message-error' para o socket do remetente (frontend reseta).
+   *   2. Devolve o mesmo shape no ACK (compat com callers que usem callback).
+   */
+  private replyError(client: Socket, error: string): { error: string } {
+    try {
+      client.emit("message-error", { error });
+    } catch (emitErr: any) {
+      console.error(
+        "❌ [WebSocket] Falha ao emitir message-error:",
+        emitErr?.message,
+      );
+    }
+    return { error };
   }
 
   @SubscribeMessage("join-conversation")
