@@ -131,7 +131,7 @@ export class WebhooksService {
           const phoneNumber = instanceName?.replace("line_", "");
           const line = await this.findLineByPhone(phoneNumber, {
             operators: { include: { user: true } },
-          );
+          });
           if (!line) {
             return { status: "ignored", reason: "Line not found" };
           }
