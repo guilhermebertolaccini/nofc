@@ -1678,9 +1678,28 @@ export default function Atendimento() {
 
   return (
     <MainLayout>
-      <div className="h-[calc(100vh-6rem)] flex gap-4">
+      {/*
+        Container raiz da página.
+        Layout:
+          - Mobile (< md): coluna única em h-full. A lista de conversas e
+            o chat ocupam o espaço inteiro, alternando via classes
+            `hidden md:flex` controladas por `selectedConversation`.
+          - Desktop (md+): 2 colunas lado a lado (lista 320px + chat fluido),
+            comportamento histórico preservado.
+        `h-full` herda a altura do `<main>` do MainLayout, que já garante
+        `h-[100dvh]` no container externo — fim do bug do teclado sumindo
+        atrás do chat.
+      */}
+      <div className="h-full flex flex-col md:flex-row gap-2 md:gap-4 min-h-0">
         {/* Conversations List */}
-        <GlassCard className="w-80 flex flex-col" padding="none">
+        <GlassCard
+          className={cn(
+            "flex-col w-full md:w-80 md:flex-shrink-0 min-h-0",
+            // Mobile XOR: esconder a lista quando uma conversa estiver aberta
+            selectedConversation ? "hidden md:flex" : "flex",
+          )}
+          padding="none"
+        >
           {/* Header */}
           <div className="p-4 border-b border-border/50">
             <div className="flex items-center justify-between mb-3">
@@ -2070,13 +2089,36 @@ export default function Atendimento() {
         </GlassCard>
 
         {/* Chat Area */}
-        <GlassCard className="flex-1 flex flex-col" padding="none">
+        <GlassCard
+          className={cn(
+            "flex-1 flex-col min-h-0 w-full",
+            // Mobile XOR: esconder o chat quando nenhuma conversa está aberta
+            selectedConversation ? "flex" : "hidden md:flex",
+          )}
+          padding="none"
+        >
           {selectedConversation ? (
             <>
               {/* Chat Header */}
-              <div className="p-4 border-b border-border/50 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex items-center justify-center">
+              <div className="p-3 md:p-4 border-b border-border/50 flex items-center justify-between gap-2 flex-shrink-0">
+                <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                  {/*
+                    Botão de voltar — só aparece no mobile. Como no mobile a
+                    lista de conversas é ocultada quando há um chat aberto,
+                    precisamos de um caminho explícito para "voltar". Limpa
+                    `selectedConversation` e a UI volta automaticamente para
+                    a lista (graças ao XOR `selectedConversation ? : `).
+                  */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 md:hidden flex-shrink-0"
+                    onClick={() => setSelectedConversation(null)}
+                    aria-label="Voltar para a lista"
+                  >
+                    <ArrowLeft className="h-5 w-5" />
+                  </Button>
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex-shrink-0 flex items-center justify-center">
                     <span className="text-sm font-medium text-primary-foreground">
                       {getDisplayTitle(
                         selectedConversation.customTitle,
@@ -2088,19 +2130,19 @@ export default function Atendimento() {
                         .slice(0, 2)}
                     </span>
                   </div>
-                  <div>
-                    <p className="font-medium text-foreground">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-foreground truncate">
                       {getDisplayTitle(
                         selectedConversation.customTitle,
                         selectedConversation.contactName,
                       )}
                     </p>
-                    <div className="flex items-center gap-2">
-                      <p className="text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <p className="text-xs text-muted-foreground truncate">
                         {selectedConversation.contactPhone}
                       </p>
                       {typingDisplay && (
-                        <p className="text-xs text-primary italic animate-pulse">
+                        <p className="text-xs text-primary italic animate-pulse truncate">
                           • {typingDisplay}
                         </p>
                       )}
@@ -2428,7 +2470,13 @@ export default function Atendimento() {
                           )}
                           <div
                             className={cn(
-                              "max-w-[70%] rounded-2xl px-4 py-2",
+                              // Mobile: balões mais largos (85%) para
+                              // aproveitar a tela estreita; desktop mantém
+                              // 70%. `break-words` + `whitespace-pre-wrap`
+                              // garantem que URLs longas / mensagens sem
+                              // espaços quebrem em vez de causar overflow
+                              // horizontal.
+                              "max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 break-words whitespace-pre-wrap",
                               item.msg.sender === "contact"
                                 ? "bg-card border border-border"
                                 : "bg-primary text-primary-foreground",
@@ -2618,8 +2666,23 @@ export default function Atendimento() {
               </ScrollArea>
 
               {/* Message Input */}
-              <div className="p-4 border-t border-border/50">
-                <div className="flex gap-2">
+              {/*
+                Sticky bottom + safe-area:
+                  - `sticky bottom-0` fixa o input no rodapé do scroller
+                    pai (o `<GlassCard>` flex-col), de modo que ele NUNCA
+                    fica atrás do teclado virtual quando o usuário foca o
+                    input — combinado com o `h-[100dvh]` do `MainLayout`,
+                    elimina o bug do iOS/Android.
+                  - `pb-[max(env(safe-area-inset-bottom),0.5rem)]` evita
+                    que o botão Enviar cole no "Home Indicator" do iPhone.
+                  - `bg-background` cobre qualquer conteúdo que role por
+                    baixo (importante porque o GlassCard usa fundo
+                    semi-transparente).
+                  - `z-10` mantém o input acima de eventuais elementos
+                    posicionados dentro do ScrollArea.
+              */}
+              <div className="p-3 md:p-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] border-t border-border/50 sticky bottom-0 bg-background/95 backdrop-blur z-10 flex-shrink-0">
+                <div className="flex flex-wrap gap-2 items-center">
                   <input
                     type="file"
                     ref={fileInputRef}

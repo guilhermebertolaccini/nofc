@@ -198,7 +198,18 @@ const menuItems: MenuItem[] = [
   },
 ];
 
-export function AppSidebar() {
+/**
+ * AppSidebar
+ *
+ * `onItemClick`: callback opcional executado ao clicar em qualquer item de
+ * navegação ou ação. Usado pelo `MainLayout` para fechar o Sheet do menu
+ * mobile assim que o operador escolhe uma rota.
+ */
+interface AppSidebarProps {
+  onItemClick?: () => void;
+}
+
+export function AppSidebar({ onItemClick }: AppSidebarProps = {}) {
   const location = useLocation();
   const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
@@ -230,7 +241,15 @@ export function AppSidebar() {
 
   return (
     <>
-      <aside className="w-64 h-screen bg-sidebar flex flex-col">
+      {/*
+        Largura:
+          - Desktop: w-64 (fixo no flex-row do MainLayout).
+          - Mobile: w-full dentro do SheetContent (já dimensionado lá).
+        Altura: h-full (o container externo — aside fixo no desktop ou
+        SheetContent no mobile — define a altura). Antes era `h-screen`,
+        que quebrava dentro do Sheet (causava 200vh efetivo).
+      */}
+      <aside className="w-full md:w-64 h-full bg-sidebar flex flex-col">
         {/* Logo */}
         <div className="p-4 border-b border-sidebar-border flex justify-center flex-shrink-0">
           <TaticaLogo size="xl" showText={false} />
@@ -247,6 +266,7 @@ export function AppSidebar() {
                 <li key={item.url}>
                   <Link
                     to={item.url}
+                    onClick={onItemClick}
                     className={cn(
                       "flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
                       "hover:bg-sidebar-accent/20",
@@ -266,7 +286,10 @@ export function AppSidebar() {
             {/* Separador */}
             <li className="pt-2 mt-2 border-t border-sidebar-border">
               <button
-                onClick={toggleTheme}
+                onClick={() => {
+                  toggleTheme();
+                  onItemClick?.();
+                }}
                 className={cn(
                   "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
                   "hover:bg-sidebar-accent/20 text-sidebar-foreground",
@@ -285,7 +308,10 @@ export function AppSidebar() {
 
             <li>
               <button
-                onClick={() => setIsSettingsOpen(true)}
+                onClick={() => {
+                  setIsSettingsOpen(true);
+                  onItemClick?.();
+                }}
                 className={cn(
                   "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
                   "hover:bg-sidebar-accent/20 text-sidebar-foreground",
