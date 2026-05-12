@@ -268,51 +268,105 @@ export class WebhooksService {
         // Para grupos, usar groupId como identificador; para contatos individuais, usar o número
         const contactIdentifier = isGroup ? groupId || from : from;
 
-        // Para grupos, SEMPRE buscar o nome real via Evolution API
-        if (isGroup && groupId) {
-          const evolution = await this.prisma.evolution.findUnique({
-            where: { evolutionName: line.evolutionName },
-          });
+        // ─────────────────────────────────────────────────────────────────
+        // SHARED INBOX – Resolução robusta do nome do grupo
+        // -----------------------------------------------------------------
+        // Política: o webhook NUNCA deve descartar uma mensagem por causa
+        // do nome do grupo. A cascata abaixo garante que `groupName`
+        // sempre tenha um valor utilizável antes do upsert do Contact.
+        //
+        // Cascata (PARA GRUPOS):
+        //   1. Contact.customTitle  → nome manual do operador (Shared Inbox)
+        //   2. Contact.name         → nome já em cache no banco (decente)
+        //   3. Evolution API        → fetchGroupName(...) com timeout 5s
+        //   4. Fallback determinístico → "Grupo <últimos6digitos>"
+        //
+        // Para 1x1, nenhuma chamada externa é feita.
+        // ─────────────────────────────────────────────────────────────────
 
-          if (evolution) {
-            const realGroupName = await this.fetchGroupName(
-              groupId,
-              evolution.evolutionUrl,
-              evolution.evolutionKey,
-              instanceName,
-            );
-
-            if (realGroupName) {
-              groupName = realGroupName;
-              console.log(
-                `✅ [Webhook] Nome do grupo obtido via Evolution API: ${groupName}`,
-              );
-            } else {
-              console.warn(
-                `⚠️ [Webhook] Não foi possível obter o nome do grupo via Evolution API, mantendo: ${groupName}`,
-              );
-            }
-          }
-        }
-
-        // Buscar contato (para grupos, criar/atualizar com groupId)
+        // Lookup adiantado: o mesmo objeto é reaproveitado no upsert abaixo.
         let contact = await this.prisma.contact.findFirst({
           where: { phone: contactIdentifier },
         });
 
-        if (!contact) {
-          // Para grupos, só criar se conseguiu buscar o nome real
-          if (isGroup && (!groupName || groupName === "Grupo sem nome")) {
-            console.warn(
-              `⚠️ [Webhook] Não foi possível obter nome do grupo, ignorando criação do contato por enquanto...`,
+        const hasDecentCachedName = (name?: string | null) =>
+          !!name &&
+          name.trim() !== "" &&
+          name.trim() !== "Grupo sem nome" &&
+          name.trim() !== "Desconhecido";
+
+        if (isGroup && groupId) {
+          // (1) customTitle do banco — fonte de verdade no Shared Inbox
+          if (contact?.customTitle && contact.customTitle.trim()) {
+            groupName = contact.customTitle.trim();
+            console.log(
+              `📌 [Webhook] Reusando customTitle do contato (skip Evolution): ${groupName}`,
             );
-            return { status: "ignored", reason: "Could not fetch group name" };
+          }
+          // (2) name em cache no banco
+          else if (hasDecentCachedName(contact?.name)) {
+            groupName = contact!.name.trim();
+            console.log(
+              `📌 [Webhook] Reusando contact.name em cache (skip Evolution): ${groupName}`,
+            );
+          }
+          // (3) Evolution API com timeout curto (NUNCA aborta)
+          else {
+            try {
+              const evolution = await this.prisma.evolution.findUnique({
+                where: { evolutionName: line.evolutionName },
+              });
+              if (evolution) {
+                const realGroupName = await this.fetchGroupName(
+                  groupId,
+                  evolution.evolutionUrl,
+                  evolution.evolutionKey,
+                  instanceName,
+                );
+                if (realGroupName && realGroupName.trim()) {
+                  groupName = realGroupName.trim();
+                  console.log(
+                    `✅ [Webhook] Nome do grupo via Evolution API: ${groupName}`,
+                  );
+                }
+              }
+            } catch (err: any) {
+              // Defesa extra: fetchGroupName já trata internamente, mas
+              // qualquer exceção no findUnique acima também é absorvida.
+              console.warn(
+                `⚠️ [Webhook] Erro na resolução do nome do grupo (seguindo com fallback): ${err?.message}`,
+              );
+            }
           }
 
-          // Criar contato se não existir
+          // (4) Fallback determinístico — garante que groupName NUNCA fique
+          // vazio/"Grupo sem nome" antes do upsert do Contact.
+          if (!groupName || !hasDecentCachedName(groupName)) {
+            const rawId = String(groupId).split("@")[0];
+            const shortId = rawId.slice(-6);
+            groupName = shortId
+              ? `Grupo ${shortId}`
+              : "Grupo Desconhecido";
+            console.log(
+              `🪪 [Webhook] Fallback de nome do grupo aplicado: ${groupName}`,
+            );
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // Upsert do Contact
+        // -----------------------------------------------------------------
+        // ⚠️ REMOVIDO o early return `{ status: "ignored", reason:
+        //    "Could not fetch group name" }` que existia aqui. Como a
+        //    cascata acima GARANTE um groupName válido, este caminho não
+        //    pode mais descartar mensagens de grupo silenciosamente.
+        // ─────────────────────────────────────────────────────────────────
+        if (!contact) {
           contact = await this.prisma.contact.create({
             data: {
-              name: isGroup ? groupName : message.pushName || from, // Para grupos, usar groupName (agora é o nome real da Evolution API)
+              name: isGroup
+                ? (groupName as string)
+                : message.pushName || from,
               phone: contactIdentifier,
               segment: line.segment,
               isNameManual: false, // Nome vindo do webhook, não é manual
@@ -324,23 +378,22 @@ export class WebhooksService {
         } else if (
           isGroup &&
           !contact.isNameManual &&
-          groupName &&
-          groupName !== "Grupo sem nome"
+          !contact.customTitle && // Shared Inbox: customTitle trava qualquer auto-update
+          hasDecentCachedName(groupName) &&
+          contact.name !== groupName
         ) {
-          // Se o contato existe, é grupo, NÃO tem nome manual e temos o nome real, atualizar
-          // Só atualiza se o nome for diferente do atual para evitar updates desnecessários
-          if (contact.name !== groupName) {
-            contact = await this.prisma.contact.update({
-              where: { id: contact.id },
-              data: { name: groupName },
-            });
-            console.log(
-              `✅ [Webhook] Nome do grupo atualizado automaticamente: ${contact.name} -> ${groupName} (${contactIdentifier})`,
-            );
-          }
-        } else if (isGroup && contact.isNameManual) {
+          // Se o contato existe, é grupo, NÃO tem nome manual nem customTitle
+          // e o nome resolvido é mais "decente" que o atual → atualizar.
+          contact = await this.prisma.contact.update({
+            where: { id: contact.id },
+            data: { name: groupName! },
+          });
           console.log(
-            `ℹ️ [Webhook] Grupo ${contactIdentifier} tem nome manual (${contact.name}), não atualizando automaticamente`,
+            `✅ [Webhook] Nome do grupo atualizado automaticamente: ${contact.name} (${contactIdentifier})`,
+          );
+        } else if (isGroup && (contact.isNameManual || contact.customTitle)) {
+          console.log(
+            `ℹ️ [Webhook] Grupo ${contactIdentifier} tem nome travado (customTitle/isNameManual), preservando: ${contact.customTitle || contact.name}`,
           );
         }
 
@@ -881,12 +934,26 @@ export class WebhooksService {
   }
 
   /**
-   * Busca o nome real do grupo via Evolution API
+   * Busca o nome real do grupo via Evolution API.
+   *
+   * IMPORTANTE (Shared Inbox):
+   *   Este endpoint da Evolution (`GET /group/fetchAllGroups`) é
+   *   notoriamente instável (responde vazio, lento, ou com nome
+   *   desatualizado). Por isso aqui aplicamos contrato defensivo:
+   *
+   *     1. Timeout curto e único (5s). Nada de 2 tentativas com sleep —
+   *        no pior caso, o webhook só atrasa 5s e cai no fallback.
+   *     2. NUNCA lança. Sempre devolve `string | null`.
+   *     3. O caller é responsável por decidir o fallback se receber `null`
+   *        (ex.: usar customTitle, contact.name ou "Grupo <id>").
+   *
+   *   Esta função NUNCA deve causar o descarte da mensagem.
+   *
    * @param groupId - ID do grupo (ex: 120363027798409612@g.us)
    * @param evolutionUrl - URL da Evolution API
    * @param evolutionKey - Chave de autenticação
    * @param instanceName - Nome da instância
-   * @returns Nome do grupo ou null se não encontrar
+   * @returns Nome do grupo ou `null` se não encontrar / timeout / erro
    */
   private async fetchGroupName(
     groupId: string,
@@ -894,55 +961,44 @@ export class WebhooksService {
     evolutionKey: string,
     instanceName: string,
   ): Promise<string | null> {
-    // Tentar 2 vezes antes de desistir
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        console.log(
-          `🔍 [Webhook] Buscando nome do grupo ${groupId} via Evolution API (tentativa ${attempt}/2)...`,
-        );
+    const TIMEOUT_MS = 5000; // 5s — Shared Inbox SLA-friendly
+    try {
+      console.log(
+        `🔍 [Webhook] Buscando nome do grupo ${groupId} via Evolution API (timeout ${TIMEOUT_MS}ms, tentativa única)...`,
+      );
 
-        const response = await axios.get(
-          `${evolutionUrl}/group/fetchAllGroups/${instanceName}`,
-          {
-            headers: { apikey: evolutionKey },
-            timeout: 10000, // 10 segundos de timeout
-          },
-        );
+      const response = await axios.get(
+        `${evolutionUrl}/group/fetchAllGroups/${instanceName}`,
+        {
+          headers: { apikey: evolutionKey },
+          timeout: TIMEOUT_MS,
+        },
+      );
 
-        if (response.data && Array.isArray(response.data)) {
-          // Procurar o grupo específico no array retornado
-          const group = response.data.find((g: any) => g.id === groupId);
-
-          if (group && group.subject) {
-            console.log(
-              `✅ [Webhook] Nome do grupo encontrado: ${group.subject}`,
-            );
-            return group.subject;
-          }
-        }
-
-        console.warn(
-          `⚠️ [Webhook] Grupo ${groupId} não encontrado na resposta da Evolution API (tentativa ${attempt}/2)`,
-        );
-
-        // Se primeira tentativa falhou, aguardar 1 segundo antes de tentar novamente
-        if (attempt === 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-      } catch (error: any) {
-        console.error(
-          `❌ [Webhook] Erro ao buscar nome do grupo (tentativa ${attempt}/2):`,
-          error.message,
-        );
-
-        // Se primeira tentativa falhou, aguardar 1 segundo antes de tentar novamente
-        if (attempt === 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (Array.isArray(response.data)) {
+        const group = response.data.find((g: any) => g.id === groupId);
+        const subject = group?.subject?.toString().trim();
+        if (subject) {
+          console.log(`✅ [Webhook] Nome do grupo encontrado: ${subject}`);
+          return subject;
         }
       }
-    }
 
-    return null;
+      console.warn(
+        `⚠️ [Webhook] Grupo ${groupId} não retornou subject na Evolution API (resposta vazia ou sem match)`,
+      );
+      return null;
+    } catch (error: any) {
+      const reason =
+        error?.code === "ECONNABORTED" || /timeout/i.test(error?.message)
+          ? `timeout (${TIMEOUT_MS}ms)`
+          : error?.message || "erro desconhecido";
+      console.warn(
+        `⚠️ [Webhook] fetchGroupName falhou para ${groupId}: ${reason}. ` +
+          `Caller deve aplicar fallback — NUNCA descartar a mensagem.`,
+      );
+      return null;
+    }
   }
 
   /**
