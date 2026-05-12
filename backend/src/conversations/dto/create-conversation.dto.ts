@@ -77,4 +77,12 @@ export class CreateConversationDto {
   @IsString()
   @IsOptional()
   participantName?: string; // Nome do participante que enviou a mensagem (para grupos)
+
+  @IsString()
+  @IsOptional()
+  waMessageId?: string;
+
+  @IsString()
+  @IsOptional()
+  reactionsJson?: string;
 }

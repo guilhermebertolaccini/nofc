@@ -2891,6 +2891,111 @@ export class WebsocketGateway
   }
 
   /**
+   * Fan-out de reação WhatsApp: atualiza emojis na mensagem alvo (id interno),
+   * com o mesmo dedupe room + sidebar que `emitNewMessage`.
+   */
+  async emitMessageReaction(data: {
+    contactPhone: string;
+    targetMessageId: number;
+    emojis: string[];
+    lastEmoji: string;
+    userLine: number | null;
+    segment: number | null;
+    userId: number | null | undefined;
+  }) {
+    if (!data?.contactPhone) {
+      console.warn(
+        `⚠️ [WebSocket] emitMessageReaction sem contactPhone — abortando`,
+      );
+      return;
+    }
+
+    const room = this.buildConversationRoom(data.contactPhone);
+    const payload = {
+      contactPhone: data.contactPhone,
+      targetMessageId: data.targetMessageId,
+      emojis: data.emojis,
+      lastEmoji: data.lastEmoji,
+    };
+
+    let socketIdsInRoom: Set<string>;
+    try {
+      const socketsInRoom = await this.server.in(room).fetchSockets();
+      socketIdsInRoom = new Set(socketsInRoom.map((s) => s.id));
+    } catch (err: any) {
+      console.warn(
+        `⚠️ [WebSocket] emitMessageReaction fetchSockets: ${err?.message}`,
+      );
+      socketIdsInRoom = new Set();
+    }
+
+    this.server.to(room).emit("message_reaction", payload);
+
+    const synthetic = {
+      contactPhone: data.contactPhone,
+      userLine: data.userLine,
+      segment: data.segment,
+      userId: data.userId,
+    };
+
+    const controlPanel = await this.controlPanelService.findOne();
+    const sharedLineMode = controlPanel?.sharedLineMode ?? false;
+    const sidebarTargets = new Set<number>();
+
+    if (!sharedLineMode && synthetic.userId) {
+      sidebarTargets.add(synthetic.userId);
+    }
+
+    if ((sharedLineMode || !synthetic.userId) && synthetic.userLine) {
+      try {
+        const lineOperators = await (this.prisma as any).lineOperator.findMany({
+          where: { lineId: synthetic.userLine },
+          include: { user: true },
+        });
+        for (const lo of lineOperators) {
+          const r = lo.user.role;
+          const allowed = sharedLineMode
+            ? r === "operator" || r === "admin" || r === "supervisor"
+            : r === "operator";
+          if (lo.user.status === "Online" && allowed) {
+            sidebarTargets.add(lo.userId);
+          }
+        }
+      } catch (err: any) {
+        console.error(
+          `❌ [WebSocket] emitMessageReaction lineOperators:`,
+          err?.message,
+        );
+      }
+    }
+
+    if (synthetic.segment) {
+      try {
+        const supervisors = await this.prisma.user.findMany({
+          where: { role: "supervisor", segment: synthetic.segment },
+        });
+        for (const sup of supervisors) sidebarTargets.add(sup.id);
+      } catch (err: any) {
+        console.error(
+          `❌ [WebSocket] emitMessageReaction supervisors:`,
+          err?.message,
+        );
+      }
+    }
+
+    for (const userId of sidebarTargets) {
+      const socketId = this.connectedUsers.get(userId);
+      if (!socketId) continue;
+      if (socketIdsInRoom.has(socketId)) continue;
+      this.server.to(socketId).emit("message_reaction", payload);
+    }
+
+    console.log(
+      `❤️ [WebSocket] message_reaction → ${data.contactPhone} msg#${data.targetMessageId} ${data.lastEmoji}`,
+    );
+  }
+
+  /**
    * Emite uma `new_message` para todos os destinatários relevantes,
    * GARANTINDO que cada socket receba NO MÁXIMO 1 cópia.
    *

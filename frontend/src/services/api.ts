@@ -611,8 +611,17 @@ export interface Conversation {
   sender: 'operator' | 'contact';
   datetime: string;
   tabulation: number | null;
-  messageType: 'text' | 'image' | 'video' | 'audio' | 'document';
+  messageType:
+    | 'text'
+    | 'image'
+    | 'video'
+    | 'audio'
+    | 'document'
+    | 'sticker'
+    | 'reaction';
   mediaUrl: string | null;
+  waMessageId?: string | null;
+  reactionsJson?: string | null;
   /** True se a mensagem veio de um grupo WhatsApp (@g.us) */
   isGroup?: boolean;
   /** ID do grupo (remoteJid @g.us), se aplicável */

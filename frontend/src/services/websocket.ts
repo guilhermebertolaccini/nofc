@@ -255,6 +255,8 @@ export const realtimeSocket = new RealtimeWebSocket();
 export const WS_EVENTS = {
   NEW_CONVERSATION: 'new_conversation',
   NEW_MESSAGE: 'new_message',
+  /** Reação WhatsApp aplicada a uma mensagem existente (id interno) */
+  MESSAGE_REACTION: 'message_reaction',
   MESSAGE_SENT: 'message-sent',
   CONVERSATION_UPDATED: 'conversation_updated',
   OPERATOR_STATUS: 'operator_status',

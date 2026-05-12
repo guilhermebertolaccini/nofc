@@ -248,10 +248,15 @@ model Conversation {
   groupId      String? // ID do grupo (remoteJid do grupo, ex: 120363123456789012@g.us)
   groupName    String? // Nome do grupo
   participantName String? // Nome do participante que enviou a mensagem (para grupos)
+  /// ID da mensagem no WhatsApp (Evolution/Baileys `key.id`) — correlaciona reações
+  waMessageId   String?
+  /// JSON: array de emojis (ex. `["👍","❤️"]`) acumulados nesta mensagem
+  reactionsJson String?   @db.Text
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   @@index([contactPhone])
+  @@index([contactPhone, waMessageId])
   @@index([segment])
   @@index([userLine])
   @@index([userId])

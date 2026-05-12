@@ -120,8 +120,27 @@ interface ConversationGroup {
   lastMessageTime: string;
   isFromContact: boolean;
   unread?: boolean;
-  messages: APIConversation[];
+  /** Mensagens do thread; `reactions` é derivado de `reactionsJson` ao carregar. */
+  messages: (APIConversation & { reactions?: string[] })[];
   isTabulated?: boolean; // Indica se a conversa foi tabulada
+}
+
+/** Mensagem enriquecida com reações parseadas do banco (`reactionsJson`). */
+type ChatRow = APIConversation & { reactions?: string[] };
+
+function parseReactionsFromRow(m: APIConversation): string[] | undefined {
+  if (!m.reactionsJson) return undefined;
+  try {
+    const p = JSON.parse(m.reactionsJson) as unknown;
+    return Array.isArray(p) ? (p as string[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function withReactions(m: APIConversation): ChatRow {
+  const reactions = parseReactionsFromRow(m);
+  return reactions !== undefined ? { ...m, reactions } : { ...m };
 }
 
 /** Info temporária de quem está digitando na sala atual. */
@@ -227,7 +246,7 @@ export default function Atendimento() {
       console.log("[Atendimento] New message received:", data);
 
       if (data.message) {
-        const newMsg = data.message as APIConversation;
+        const newMsg = withReactions(data.message as APIConversation);
 
         // Play sound for incoming messages
         if (newMsg.sender === "contact") {
@@ -327,6 +346,40 @@ export default function Atendimento() {
     [playMessageSound],
   ); // Removido selectedConversation da dependência
 
+  /** Reação WhatsApp: atualiza emojis no balão da mensagem alvo (id interno). */
+  useRealtimeSubscription(
+    WS_EVENTS.MESSAGE_REACTION,
+    (data: {
+      contactPhone?: string;
+      targetMessageId?: number;
+      emojis?: string[];
+    }) => {
+      const phone = data?.contactPhone;
+      const targetId = data?.targetMessageId;
+      const emojis = data?.emojis;
+      if (!phone || targetId == null || !Array.isArray(emojis)) return;
+
+      const json = JSON.stringify(emojis);
+      const patchGroup = (g: ConversationGroup): ConversationGroup => ({
+        ...g,
+        messages: g.messages.map((m) =>
+          m.id === targetId
+            ? { ...m, reactionsJson: json, reactions: [...emojis] }
+            : m,
+        ),
+      });
+
+      setConversations((prev) =>
+        prev.map((g) => (g.contactPhone === phone ? patchGroup(g) : g)),
+      );
+      setSelectedConversation((prev) => {
+        if (!prev || prev.contactPhone !== phone) return prev;
+        return patchGroup(prev);
+      });
+    },
+    [],
+  );
+
   // Subscribe to message sent confirmation
   useRealtimeSubscription(
     "message-sent",
@@ -334,7 +387,7 @@ export default function Atendimento() {
       console.log("[Atendimento] Message sent confirmation:", data);
       if (data?.message) {
         // Adicionar mensagem à conversa ativa
-        const newMsg = data.message as APIConversation;
+        const newMsg = withReactions(data.message as APIConversation);
 
         // Resetar loading de envio de mensagem
         setIsSending(false);
@@ -670,7 +723,7 @@ export default function Atendimento() {
           conv.tabulation !== null && conv.tabulation !== undefined;
 
         if (existing) {
-          existing.messages.push(conv);
+          existing.messages.push(withReactions(conv));
           // Update last message if this one is more recent
           const convTime = new Date(conv.datetime).getTime();
           const existingTime = new Date(existing.lastMessageTime).getTime();
@@ -693,7 +746,7 @@ export default function Atendimento() {
             lastMessageTime: conv.datetime,
             isFromContact: conv.sender === "contact",
             isTabulated: isTabulated,
-            messages: [conv],
+            messages: [withReactions(conv)],
           });
         }
       });
@@ -705,7 +758,7 @@ export default function Atendimento() {
           messages: group.messages.sort(
             (a, b) =>
               new Date(a.datetime).getTime() - new Date(b.datetime).getTime(),
-          ),
+          ).map(withReactions),
         }))
         .sort(
           (a, b) =>
@@ -1658,10 +1711,10 @@ export default function Atendimento() {
   };
 
   /** Retorna itens da lista de chat intercalando balões de data e mensagens. */
-  const getChatListItems = (messages: APIConversation[]) => {
+  const getChatListItems = (messages: ChatRow[]) => {
     const items: (
       | { type: "date"; label: string }
-      | { type: "message"; msg: APIConversation }
+      | { type: "message"; msg: ChatRow }
     )[] = [];
     let lastDateKey = "";
     for (const msg of messages) {
@@ -2447,6 +2500,15 @@ export default function Atendimento() {
                             {item.label}
                           </span>
                         </div>
+                      ) : item.msg.messageType === "reaction" ? (
+                        <div
+                          key={item.msg.id}
+                          className="flex justify-center py-1"
+                        >
+                          <div className="rounded-full border border-border/60 bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+                            {item.msg.message?.trim() || "Reação"}
+                          </div>
+                        </div>
                       ) : (
                         <div
                           key={item.msg.id}
@@ -2476,7 +2538,7 @@ export default function Atendimento() {
                               // garantem que URLs longas / mensagens sem
                               // espaços quebrem em vez de causar overflow
                               // horizontal.
-                              "max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 break-words whitespace-pre-wrap",
+                              "max-w-[85%] md:max-w-[70%] relative rounded-2xl px-4 py-2 break-words whitespace-pre-wrap",
                               item.msg.sender === "contact"
                                 ? "bg-card border border-border"
                                 : "bg-primary text-primary-foreground",
@@ -2640,6 +2702,15 @@ export default function Atendimento() {
                                 <p className="text-sm">{item.msg.message}</p>
                               );
                             })()}
+                            {item.msg.reactions &&
+                              item.msg.reactions.length > 0 && (
+                                <span
+                                  className="pointer-events-none absolute -bottom-2 -right-2 z-[1] rounded-full border border-border bg-background px-1.5 py-0.5 text-[11px] leading-none shadow-sm"
+                                  title="Reações"
+                                >
+                                  {item.msg.reactions.join("")}
+                                </span>
+                              )}
                             <p
                               className={cn(
                                 "text-xs mt-1",
@@ -2659,7 +2730,7 @@ export default function Atendimento() {
                             </div>
                           )}
                         </div>
-                      ),
+                      )
                   )}
                   <div ref={messagesEndRef} />
                 </div>

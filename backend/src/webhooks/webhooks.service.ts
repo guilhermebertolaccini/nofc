@@ -122,6 +122,49 @@ export class WebhooksService {
 
         console.log("📱 Mensagem de:", from, "| fromMe:", message.key.fromMe);
 
+        // Reações WhatsApp (Evolution: message.reactionMessage) — tratadas
+        // antes do pipeline de mídia/texto normal: atualizam a mensagem-alvo
+        // no banco + emitem `message_reaction`, ou gravam linha órfã.
+        const messageKindEarly = this.getMessageType(message.message);
+        if (messageKindEarly === "reaction") {
+          const instanceName = data.instance || data.instanceName;
+          const phoneNumber = instanceName?.replace("line_", "");
+          const line = await this.findLineByPhone(phoneNumber, {
+            operators: { include: { user: true } },
+          );
+          if (!line) {
+            return { status: "ignored", reason: "Line not found" };
+          }
+          const contactIdentifier = isGroup ? groupId || from : from;
+          const contactQuick = await this.prisma.contact.findFirst({
+            where: { phone: contactIdentifier },
+          });
+          const shortGroup =
+            groupId != null
+              ? `Grupo ${String(groupId).split("@")[0].replace(/\D/g, "").slice(-6)}`
+              : "Grupo";
+          const resolvedGroupName = isGroup
+            ? contactQuick?.customTitle?.trim() ||
+              contactQuick?.name ||
+              shortGroup
+            : null;
+          const contactDisplayName = isGroup
+            ? resolvedGroupName || shortGroup
+            : contactQuick?.name || message.pushName || from;
+
+          return this.processReactionWebhook({
+            message,
+            line,
+            contactIdentifier,
+            isGroup,
+            groupName: resolvedGroupName,
+            groupIdJid: groupId || undefined,
+            contactDisplayName,
+            fromMe,
+            participantName,
+          });
+        }
+
         // Extrair texto da mensagem
         // Stickers nunca têm caption — usamos "Figurinha" como rótulo
         // (o frontend renderiza a imagem em vez do texto quando há mediaUrl).
@@ -683,6 +726,7 @@ export class WebhooksService {
           groupName: isGroup ? groupName : undefined,
           participantName: isGroup ? participantName : undefined, // Nome de quem enviou no grupo
           datetime: evolutionDatetime,
+          waMessageId: message.key?.id ?? undefined,
         });
 
         // Criar/atualizar vínculo de 24 horas entre conversa e operador (garantia adicional)
@@ -1316,6 +1360,9 @@ export class WebhooksService {
               const isFromMe = !!msg.key?.fromMe;
 
               const messageText =
+                (msg.message?.reactionMessage?.text
+                  ? `Reagiu com: ${msg.message.reactionMessage.text}`
+                  : null) ||
                 msg.message?.conversation ||
                 msg.message?.extendedTextMessage?.text ||
                 msg.message?.imageMessage?.caption ||
@@ -1368,6 +1415,7 @@ export class WebhooksService {
                 groupId: isGroup ? remoteJid : undefined,
                 groupName: isGroup ? contactName : undefined,
                 datetime,
+                waMessageId: msg.key?.id ?? undefined,
               });
 
               imported++;
@@ -1394,7 +1442,134 @@ export class WebhooksService {
     }
   }
 
+  /**
+   * Processa `reactionMessage` da Evolution/Baileys.
+   * - Se existir mensagem interna com `waMessageId` = key.id do alvo →
+   *   acumula emoji em `reactionsJson` e emite `message_reaction`.
+   * - Caso contrário → grava linha `messageType=reaction` ("Reagiu com: …")
+   *   e emite `new_message` (fallback no frontend).
+   */
+  private async processReactionWebhook(params: {
+    message: any;
+    line: any;
+    contactIdentifier: string;
+    isGroup: boolean;
+    groupName: string | null;
+    groupIdJid?: string;
+    contactDisplayName: string;
+    fromMe: boolean;
+    participantName: string | null;
+  }) {
+    const {
+      message,
+      line,
+      contactIdentifier,
+      isGroup,
+      groupName,
+      groupIdJid,
+      contactDisplayName,
+      fromMe,
+      participantName,
+    } = params;
+
+    const reactionMsg = message.message?.reactionMessage;
+    if (!reactionMsg) {
+      return { status: "ignored", reason: "No reactionMessage" };
+    }
+
+    const emoji =
+      (typeof reactionMsg.text === "string" && reactionMsg.text) ||
+      reactionMsg.reaction ||
+      reactionMsg.emoji ||
+      "❓";
+    const targetWaId = reactionMsg.key?.id;
+    if (!targetWaId) {
+      console.warn("⚠️ [Webhook] Reação sem key.id do alvo — ignorando");
+      return { status: "ignored", reason: "No reaction target id" };
+    }
+
+    const target = await this.prisma.conversation.findFirst({
+      where: {
+        contactPhone: contactIdentifier,
+        waMessageId: targetWaId,
+      },
+      orderBy: { id: "desc" },
+    });
+
+    if (target) {
+      let prev: string[] = [];
+      if (target.reactionsJson) {
+        try {
+          prev = JSON.parse(target.reactionsJson) as string[];
+        } catch {
+          prev = [];
+        }
+      }
+      const next = [...prev, emoji].slice(-20);
+      await this.prisma.conversation.update({
+        where: { id: target.id },
+        data: { reactionsJson: JSON.stringify(next) },
+      });
+
+      await this.websocketGateway.emitMessageReaction({
+        contactPhone: contactIdentifier,
+        targetMessageId: target.id,
+        emojis: next,
+        lastEmoji: emoji,
+        userLine: line.id,
+        segment: line.segment ?? null,
+        userId: target.userId,
+      });
+
+      console.log(
+        `❤️ [Webhook] Reação ${emoji} aplicada à mensagem id=${target.id} (wa=${targetWaId})`,
+      );
+      return { status: "success", kind: "reaction_applied" };
+    }
+
+    const evolutionDatetime =
+      (message.messageTimestamp ?? message.key?.messageTimestamp)
+        ? new Date(
+            Number(
+              message.messageTimestamp ?? message.key?.messageTimestamp,
+            ) * 1000,
+          )
+        : undefined;
+
+    const sender: "contact" | "operator" = fromMe ? "operator" : "contact";
+    const userNameForConversation = fromMe ? "Celular/WhatsApp Web" : null;
+
+    const conversation = await this.conversationsService.create({
+      contactName: isGroup ? groupName || contactDisplayName : contactDisplayName,
+      contactPhone: contactIdentifier,
+      segment: line.segment ?? undefined,
+      userName: userNameForConversation ?? undefined,
+      userLine: line.id,
+      userId: null,
+      message: `Reagiu com: ${emoji}`,
+      sender,
+      messageType: "reaction",
+      isGroup,
+      groupId: isGroup ? groupIdJid || contactIdentifier : undefined,
+      groupName: isGroup ? groupName || undefined : undefined,
+      participantName: isGroup ? participantName ?? undefined : undefined,
+      waMessageId: message.key?.id ?? undefined,
+      datetime: evolutionDatetime,
+    });
+
+    await this.websocketGateway.emitNewMessage({
+      ...conversation,
+      blockedByPhrase: false,
+    });
+
+    console.log(
+      `❤️ [Webhook] Reação órfã (${emoji}) persistida como conversa id=${conversation.id}`,
+    );
+    return { status: "success", kind: "reaction_orphan", conversation };
+  }
+
   private getMessageType(message: any): string {
+    if (message?.reactionMessage) return "reaction";
     if (message?.imageMessage) return "image";
     // Stickers (figurinhas) são tratados como uma categoria própria —
     // pipeline de download é o mesmo de uma imagem, mas o frontend renderiza
