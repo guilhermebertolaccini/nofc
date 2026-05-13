@@ -165,23 +165,13 @@ export class WebhooksService {
           });
         }
 
-        // Extrair texto da mensagem
+        // Extrair texto da mensagem (templates HSM, listas, botões, wrappers Baileys)
         // Stickers nunca têm caption — usamos "Figurinha" como rótulo
         // (o frontend renderiza a imagem em vez do texto quando há mediaUrl).
-        const messageText =
-          message.message?.conversation ||
-          message.message?.extendedTextMessage?.text ||
-          message.message?.imageMessage?.caption ||
-          message.message?.videoMessage?.caption ||
-          message.message?.documentMessage?.caption ||
-          (message.message?.imageMessage ? "Imagem recebida" : undefined) ||
-          (message.message?.stickerMessage ? "Figurinha" : undefined) ||
-          (message.message?.videoMessage ? "Vídeo recebido" : undefined) ||
-          (message.message?.audioMessage ? "Áudio recebido" : undefined) ||
-          (message.message?.documentMessage
-            ? "Documento recebido"
-            : undefined) ||
-          "Mensagem recebida";
+        const messageText = this.extractDisplayMessageText(
+          message.message,
+          "Mensagem recebida",
+        );
 
         console.log("💬 Texto:", messageText);
 
@@ -1363,10 +1353,10 @@ export class WebhooksService {
                 (msg.message?.reactionMessage?.text
                   ? `Reagiu com: ${msg.message.reactionMessage.text}`
                   : null) ||
-                msg.message?.conversation ||
-                msg.message?.extendedTextMessage?.text ||
-                msg.message?.imageMessage?.caption ||
-                "Mensagem importada";
+                this.extractDisplayMessageText(
+                  msg.message,
+                  "Mensagem importada",
+                );
 
               const messageType = this.getMessageType(msg.message);
               const sender = isFromMe ? "operator" : "contact";
@@ -1568,25 +1558,116 @@ export class WebhooksService {
     return { status: "success", kind: "reaction_orphan", conversation };
   }
 
+  /**
+   * Desembrulha mensagens efêmeras / view-once / caption-document (Baileys).
+   * O payload útil costuma estar em `.message` dentro desses nós.
+   */
+  private unwrapNestedMessageContent(content: any): any {
+    if (!content || typeof content !== "object") return content;
+    let current = content;
+    for (let depth = 0; depth < 5; depth++) {
+      const next =
+        current?.viewOnceMessage?.message ||
+        current?.viewOnceMessageV2?.message ||
+        current?.ephemeralMessage?.message ||
+        current?.documentWithCaptionMessage?.message;
+      if (!next || next === current) break;
+      current = next;
+    }
+    return current;
+  }
+
+  /**
+   * Texto “legível” para o painel: conversa simples, caption, templates comerciais,
+   * HSM, listas, respostas interativas, etc.
+   */
+  private pickStructuredText(m: any): string | undefined {
+    if (!m) return undefined;
+    const raw =
+      m?.conversation ||
+      m?.extendedTextMessage?.text ||
+      m?.imageMessage?.caption ||
+      m?.videoMessage?.caption ||
+      m?.documentMessage?.caption ||
+      m?.templateMessage?.hydratedTemplate?.hydratedContentText ||
+      m?.templateMessage?.hydratedFourRowTemplate?.hydratedContentText ||
+      m?.templateMessage?.hydratedTemplate?.hydratedTitleText ||
+      m?.highlyStructuredMessage?.hydratedHsm?.hydratedContentText ||
+      m?.buttonsMessage?.contentText ||
+      m?.listMessage?.description ||
+      m?.listMessage?.title ||
+      m?.buttonsResponseMessage?.selectedDisplayText ||
+      m?.listResponseMessage?.title ||
+      m?.interactiveMessage?.body?.text ||
+      m?.interactiveMessage?.header?.title;
+
+    if (raw === undefined || raw === null) return undefined;
+    const s = String(raw).trim();
+    return s.length > 0 ? s : undefined;
+  }
+
+  /**
+   * Texto exibido no histórico + fallbacks para mídia sem legenda.
+   */
+  private extractDisplayMessageText(
+    content: any,
+    emptyFallback: string,
+  ): string {
+    const core = this.unwrapNestedMessageContent(content);
+    const structured =
+      this.pickStructuredText(content) || this.pickStructuredText(core);
+
+    const hasSticker = !!(content?.stickerMessage || core?.stickerMessage);
+    const hasImage = !!(content?.imageMessage || core?.imageMessage);
+    const hasVideo = !!(content?.videoMessage || core?.videoMessage);
+    const hasAudio = !!(content?.audioMessage || core?.audioMessage);
+    const hasDocument = !!(
+      content?.documentMessage || core?.documentMessage
+    );
+
+    return (
+      structured ||
+      (hasImage ? "Imagem recebida" : undefined) ||
+      (hasSticker ? "Figurinha" : undefined) ||
+      (hasVideo ? "Vídeo recebido" : undefined) ||
+      (hasAudio ? "Áudio recebido" : undefined) ||
+      (hasDocument ? "Documento recebido" : undefined) ||
+      emptyFallback
+    );
+  }
+
   private getMessageType(message: any): string {
-    if (message?.reactionMessage) return "reaction";
-    if (message?.imageMessage) return "image";
+    const m = this.unwrapNestedMessageContent(message);
+    if (m?.reactionMessage) return "reaction";
+    if (
+      m?.templateMessage ||
+      m?.highlyStructuredMessage ||
+      m?.buttonsMessage ||
+      m?.listMessage ||
+      m?.buttonsResponseMessage ||
+      m?.listResponseMessage ||
+      m?.interactiveMessage
+    ) {
+      return "text";
+    }
+    if (m?.imageMessage) return "image";
     // Stickers (figurinhas) são tratados como uma categoria própria —
     // pipeline de download é o mesmo de uma imagem, mas o frontend renderiza
     // num tamanho menor para preservar a estética de figurinha.
-    if (message?.stickerMessage) return "sticker";
-    if (message?.videoMessage) return "video";
-    if (message?.audioMessage) return "audio";
-    if (message?.documentMessage) return "document";
+    if (m?.stickerMessage) return "sticker";
+    if (m?.videoMessage) return "video";
+    if (m?.audioMessage) return "audio";
+    if (m?.documentMessage) return "document";
     return "text";
   }
 
   private getMediaUrl(message: any): string | undefined {
-    if (message?.imageMessage?.url) return message.imageMessage.url;
-    if (message?.stickerMessage?.url) return message.stickerMessage.url;
-    if (message?.videoMessage?.url) return message.videoMessage.url;
-    if (message?.audioMessage?.url) return message.audioMessage.url;
-    if (message?.documentMessage?.url) return message.documentMessage.url;
+    const m = this.unwrapNestedMessageContent(message);
+    if (m?.imageMessage?.url) return m.imageMessage.url;
+    if (m?.stickerMessage?.url) return m.stickerMessage.url;
+    if (m?.videoMessage?.url) return m.videoMessage.url;
+    if (m?.audioMessage?.url) return m.audioMessage.url;
+    if (m?.documentMessage?.url) return m.documentMessage.url;
     return undefined;
   }
 
@@ -1645,46 +1726,52 @@ export class WebhooksService {
       "documentMessage",
     ];
 
-    for (const type of mediaTypes) {
-      if (message?.[type]) {
-        const mediaMsg = message[type];
+    const core = this.unwrapNestedMessageContent(message);
+    const layers =
+      core != null && core !== message ? [message, core] : [message];
 
-        console.log(`🔍 [Webhook] Verificando ${type}:`, {
-          hasBase64: !!mediaMsg.base64,
-          hasMedia: !!mediaMsg.media,
-          hasDirectBase64: typeof mediaMsg === "string",
-          mimetype: mediaMsg.mimetype,
-          keys: Object.keys(mediaMsg),
-        });
+    for (const layer of layers) {
+      for (const type of mediaTypes) {
+        if (layer?.[type]) {
+          const mediaMsg = layer[type];
 
-        // A Evolution API pode enviar base64 em diferentes formatos
-        // Formato 1: { base64: "...", mimetype: "..." }
-        if (mediaMsg.base64) {
-          console.log(`✅ [Webhook] Base64 encontrado em ${type}.base64`);
-          return {
-            data: mediaMsg.base64,
-            mimetype: mediaMsg.mimetype || this.getDefaultMimetype(type),
-          };
-        }
+          console.log(`🔍 [Webhook] Verificando ${type}:`, {
+            hasBase64: !!mediaMsg.base64,
+            hasMedia: !!mediaMsg.media,
+            hasDirectBase64: typeof mediaMsg === "string",
+            mimetype: mediaMsg.mimetype,
+            keys: Object.keys(mediaMsg),
+          });
 
-        // Formato 2: { mediaKey, ... } com base64 no campo data
-        if (mediaMsg.media) {
-          console.log(`✅ [Webhook] Base64 encontrado em ${type}.media`);
-          return {
-            data: mediaMsg.media,
-            mimetype: mediaMsg.mimetype || this.getDefaultMimetype(type),
-          };
-        }
+          // A Evolution API pode enviar base64 em diferentes formatos
+          // Formato 1: { base64: "...", mimetype: "..." }
+          if (mediaMsg.base64) {
+            console.log(`✅ [Webhook] Base64 encontrado em ${type}.base64`);
+            return {
+              data: mediaMsg.base64,
+              mimetype: mediaMsg.mimetype || this.getDefaultMimetype(type),
+            };
+          }
 
-        // Formato 3: O próprio objeto pode ser base64 (string direta)
-        if (typeof mediaMsg === "string" && mediaMsg.length > 100) {
-          console.log(
-            `✅ [Webhook] Base64 encontrado como string direta em ${type}`,
-          );
-          return {
-            data: mediaMsg,
-            mimetype: this.getDefaultMimetype(type),
-          };
+          // Formato 2: { mediaKey, ... } com base64 no campo data
+          if (mediaMsg.media) {
+            console.log(`✅ [Webhook] Base64 encontrado em ${type}.media`);
+            return {
+              data: mediaMsg.media,
+              mimetype: mediaMsg.mimetype || this.getDefaultMimetype(type),
+            };
+          }
+
+          // Formato 3: O próprio objeto pode ser base64 (string direta)
+          if (typeof mediaMsg === "string" && mediaMsg.length > 100) {
+            console.log(
+              `✅ [Webhook] Base64 encontrado como string direta em ${type}`,
+            );
+            return {
+              data: mediaMsg,
+              mimetype: this.getDefaultMimetype(type),
+            };
+          }
         }
       }
     }
