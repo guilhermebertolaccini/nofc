@@ -1,8 +1,15 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+} from "react";
 import {
   Plus,
   Send,
   FileText,
+  File,
   MessageCircle,
   ArrowRight,
   ArrowLeft,
@@ -86,6 +93,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAuth } from "@/contexts/AuthContext";
+import { renderTextWithLinks } from "@/utils/textUtils";
 
 /**
  * Resolve qualquer `mediaUrl` para uma URL utilizável pelo navegador.
@@ -2612,7 +2620,9 @@ export default function Atendimento() {
                           className="flex justify-center py-1"
                         >
                           <div className="rounded-full border border-border/60 bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
-                            {item.msg.message?.trim() || "Reação"}
+                            {renderTextWithLinks(
+                              item.msg.message?.trim() || "Reação",
+                            )}
                           </div>
                         </div>
                       ) : (
@@ -2707,7 +2717,9 @@ export default function Atendimento() {
                                     {item.msg.message &&
                                       !item.msg.message.includes("recebida") && (
                                         <p className="text-sm mt-2">
-                                          {item.msg.message}
+                                          {renderTextWithLinks(
+                                            item.msg.message,
+                                          )}
                                         </p>
                                       )}
                                   </div>
@@ -2775,28 +2787,44 @@ export default function Atendimento() {
                                     {item.msg.message &&
                                       !item.msg.message.includes("recebido") && (
                                         <p className="text-sm mt-2">
-                                          {item.msg.message}
+                                          {renderTextWithLinks(
+                                            item.msg.message,
+                                          )}
                                         </p>
                                       )}
                                   </div>
                                 );
                               }
 
-                              if (
-                                item.msg.messageType === "document" &&
-                                resolvedUrl
-                              ) {
+                              if (item.msg.messageType === "document") {
+                                const docLabel =
+                                  item.msg.message?.trim() || "Documento";
+                                const downloadAttr = docLabel.replace(
+                                  /[/\\?%*:|"<>]/g,
+                                  "_",
+                                );
                                 return (
                                   <div className="mb-2">
-                                    <a
-                                      href={resolvedUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="flex items-center gap-2 text-sm underline hover:no-underline"
-                                    >
-                                      <FileText className="h-4 w-4" />
-                                      {item.msg.message || "Documento"}
-                                    </a>
+                                    {resolvedUrl ? (
+                                      <a
+                                        href={resolvedUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        download={downloadAttr || undefined}
+                                        className={cn(
+                                          "flex items-center gap-2 text-sm underline hover:no-underline",
+                                          "break-all",
+                                        )}
+                                      >
+                                        <File className="h-4 w-4 flex-shrink-0" aria-hidden />
+                                        {docLabel}
+                                      </a>
+                                    ) : (
+                                      <span className="flex items-center gap-2 text-sm break-all opacity-80">
+                                        <File className="h-4 w-4 flex-shrink-0" aria-hidden />
+                                        {renderTextWithLinks(docLabel)}
+                                      </span>
+                                    )}
                                   </div>
                                 );
                               }
@@ -2804,8 +2832,12 @@ export default function Atendimento() {
                               // Fallback: texto puro (inclui mensagens sem mídia
                               // e casos em que `resolvedUrl` é null porque o
                               // backend descartou uma URL CDN inválida).
+                              const fallbackText = item.msg.message ?? "";
+                              if (!fallbackText.trim()) return null;
                               return (
-                                <p className="text-sm">{item.msg.message}</p>
+                                <p className="text-sm">
+                                  {renderTextWithLinks(fallbackText)}
+                                </p>
                               );
                             })()}
                             {item.msg.reactions &&

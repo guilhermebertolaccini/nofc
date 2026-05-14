@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { renderTextWithLinks } from "@/utils/textUtils";
 import { toast } from "@/hooks/use-toast";
 import {
   conversationsService,
@@ -738,7 +739,7 @@ export default function Supervisionar() {
                                 {item.msg.message &&
                                   !item.msg.message.includes("recebida") && (
                                     <p className="text-sm mt-2">
-                                      {item.msg.message}
+                                      {renderTextWithLinks(item.msg.message)}
                                     </p>
                                   )}
                               </div>
@@ -775,7 +776,7 @@ export default function Supervisionar() {
                                 {item.msg.message &&
                                   !item.msg.message.includes("recebido") && (
                                     <p className="text-sm mt-2">
-                                      {item.msg.message}
+                                      {renderTextWithLinks(item.msg.message)}
                                     </p>
                                   )}
                               </div>
@@ -793,11 +794,21 @@ export default function Supervisionar() {
                                   className="flex items-center gap-2 text-sm underline hover:no-underline"
                                 >
                                   <FileText className="h-4 w-4" />
-                                  {item.msg.message || "Documento"}
+                                  {renderTextWithLinks(
+                                    item.msg.message?.trim() || "Documento",
+                                  )}
                                 </a>
                               </div>
                             ) : (
-                              <p className="text-sm">{item.msg.message}</p>
+                              (() => {
+                                const t = item.msg.message ?? "";
+                                if (!t.trim()) return null;
+                                return (
+                                  <p className="text-sm">
+                                    {renderTextWithLinks(t)}
+                                  </p>
+                                );
+                              })()
                             )}
                             <p
                               className={cn(

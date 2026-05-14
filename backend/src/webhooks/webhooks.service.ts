@@ -178,6 +178,11 @@ export class WebhooksService {
         const messageType = this.getMessageType(message.message);
         let mediaUrl = this.getMediaUrl(message.message);
 
+        const documentSourceFileName =
+          messageType === "document"
+            ? this.getDocumentSourceFileName(message.message)
+            : undefined;
+
         // Buscar a linha que recebeu a mensagem
         const instanceName = data.instance || data.instanceName;
         const phoneNumber = instanceName?.replace("line_", "");
@@ -257,7 +262,7 @@ export class WebhooksService {
               base64Media.mimetype,
             );
             try {
-              const fileName = `${Date.now()}-${from}-${messageType}.${this.getExtension(messageType, base64Media.mimetype)}`;
+              const fileName = `${Date.now()}-${from}-${messageType}.${this.getExtension(messageType, base64Media.mimetype, documentSourceFileName)}`;
               const localFileName = await this.saveBase64Media(
                 base64Media.data,
                 fileName,
@@ -278,7 +283,7 @@ export class WebhooksService {
             if (mediaUrl) {
               // Fallback: baixar da URL se não tiver base64
               try {
-                const fileName = `${Date.now()}-${from}-${messageType}.${this.getExtension(messageType)}`;
+                const fileName = `${Date.now()}-${from}-${messageType}.${this.getExtension(messageType, undefined, documentSourceFileName)}`;
                 const localFileName =
                   await this.mediaService.downloadMediaFromEvolution(
                     mediaUrl,
@@ -311,7 +316,7 @@ export class WebhooksService {
             mediaUrl,
           );
           try {
-            const fileName = `${Date.now()}-${from}-${messageType}.${this.getExtension(messageType)}`;
+            const fileName = `${Date.now()}-${from}-${messageType}.${this.getExtension(messageType, undefined, documentSourceFileName)}`;
             const localFileName =
               await this.mediaService.downloadMediaFromEvolution(
                 mediaUrl,
@@ -1589,6 +1594,12 @@ export class WebhooksService {
       m?.imageMessage?.caption ||
       m?.videoMessage?.caption ||
       m?.documentMessage?.caption ||
+      (typeof m?.documentMessage?.fileName === "string"
+        ? m.documentMessage.fileName.trim()
+        : "") ||
+      (typeof m?.documentMessage?.title === "string"
+        ? m.documentMessage.title.trim()
+        : "") ||
       m?.templateMessage?.hydratedTemplate?.hydratedContentText ||
       m?.templateMessage?.hydratedFourRowTemplate?.hydratedContentText ||
       m?.templateMessage?.hydratedTemplate?.hydratedTitleText ||
@@ -1690,18 +1701,78 @@ export class WebhooksService {
     return appUrl ? `${appUrl}/media/${fileName}` : `/media/${fileName}`;
   }
 
-  private getExtension(messageType: string, mimetype?: string): string {
-    // Tentar extrair do mimetype primeiro
+  /**
+   * Nome de ficheiro / título enviado pela Evolution em documentos (para extensão e rótulo).
+   */
+  private getDocumentSourceFileName(webhookMessageInner: any): string | undefined {
+    const core = this.unwrapNestedMessageContent(webhookMessageInner);
+    const pick = (m: any): string | undefined => {
+      const d = m?.documentMessage;
+      if (!d) return undefined;
+      const fn = typeof d.fileName === "string" ? d.fileName.trim() : "";
+      const t = typeof d.title === "string" ? d.title.trim() : "";
+      const name = fn || t;
+      return name.length > 0 ? name : undefined;
+    };
+    return pick(webhookMessageInner) ?? pick(core);
+  }
+
+  /** Extrai extensão normalizada a partir do nome original (ex: `Relatório.xlsx` → `xlsx`). */
+  private extensionFromDocumentFileName(
+    originalFileName: string,
+  ): string | undefined {
+    if (!originalFileName || typeof originalFileName !== "string") {
+      return undefined;
+    }
+    const base = path.basename(originalFileName.trim());
+    const dot = base.lastIndexOf(".");
+    if (dot <= 0 || dot >= base.length - 1) return undefined;
+    let ext = base.slice(dot + 1).toLowerCase();
+    ext = ext.replace(/[^a-z0-9]/g, "");
+    if (!ext || ext.length > 12) return undefined;
+    return ext;
+  }
+
+  private getExtension(
+    messageType: string,
+    mimetype?: string,
+    documentOriginalFileName?: string,
+  ): string {
+    if (messageType === "document" && documentOriginalFileName) {
+      const fromName = this.extensionFromDocumentFileName(
+        documentOriginalFileName,
+      );
+      if (fromName) return fromName;
+    }
+
     if (mimetype) {
-      const ext = mimetype.split("/")[1]?.split(";")[0];
-      if (ext) {
-        // Normalizar extensões comuns
-        const normalizedExt = ext.replace("jpeg", "jpg").replace("mpeg", "mp3");
-        return normalizedExt;
+      const normalized = mimetype.split(";")[0]?.trim().toLowerCase();
+      const mimeToExt: Record<string, string> = {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+          "xlsx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+          "docx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+          "pptx",
+        "application/vnd.ms-excel": "xls",
+        "application/msword": "doc",
+        "application/vnd.ms-powerpoint": "ppt",
+        "application/pdf": "pdf",
+        "application/vnd.oasis.opendocument.text": "odt",
+        "application/vnd.oasis.opendocument.spreadsheet": "ods",
+        "application/vnd.oasis.opendocument.presentation": "odp",
+      };
+      if (normalized && mimeToExt[normalized]) {
+        return mimeToExt[normalized];
+      }
+
+      const sub = mimetype.split("/")[1]?.split(";")[0];
+      if (sub) {
+        return sub.replace("jpeg", "jpg").replace("mpeg", "mp3");
       }
     }
 
-    const extensions = {
+    const extensions: Record<string, string> = {
       image: "jpg",
       video: "mp4",
       audio: "ogg",
