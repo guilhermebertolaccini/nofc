@@ -7,11 +7,36 @@ import { UpdateConversationDto } from "./dto/update-conversation.dto";
 export class ConversationsService {
   constructor(private prisma: PrismaService) {}
 
+  /**
+   * Alinha com `WebsocketGateway.resolveOutboundConversationMessage`:
+   * não perder o nome do ficheiro quando o cliente só envia rótulo genérico de mídia.
+   */
+  private resolveOutboundMessageText(
+    message: string,
+    fileName?: string,
+  ): string {
+    const cap = message?.trim() ?? "";
+    const generic = new Set([
+      "Documento enviado",
+      "Imagem enviada",
+      "Vídeo enviado",
+      "Áudio enviado",
+    ]);
+    const fn = fileName?.trim() ?? "";
+    if (cap && !generic.has(cap)) return cap;
+    if (fn) return fn;
+    return cap || " ";
+  }
+
   async create(createConversationDto: CreateConversationDto) {
+    const { fileName, ...rest } = createConversationDto;
+    const message = this.resolveOutboundMessageText(rest.message, fileName);
+
     return this.prisma.conversation.create({
       data: {
-        ...createConversationDto,
-        datetime: createConversationDto.datetime ?? new Date(),
+        ...rest,
+        message,
+        datetime: rest.datetime ?? new Date(),
       },
     });
   }

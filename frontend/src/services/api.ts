@@ -646,6 +646,8 @@ export interface CreateConversationData {
   tabulation?: number | null;
   messageType?: 'text' | 'image' | 'video' | 'audio' | 'document';
   mediaUrl?: string | null;
+  /** Nome original do ficheiro (REST fallback; alinha com o DTO backend) */
+  fileName?: string;
 }
 
 export const conversationsService = {

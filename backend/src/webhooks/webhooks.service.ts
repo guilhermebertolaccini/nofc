@@ -1717,6 +1717,12 @@ export class WebhooksService {
     return pick(webhookMessageInner) ?? pick(core);
   }
 
+  /** Remove parâmetros após `;` (ex.: `audio/ogg; codecs=opus` → `audio/ogg`). */
+  private sanitizeMimeType(mimetype?: string | null): string {
+    if (mimetype == null || typeof mimetype !== "string") return "";
+    return mimetype.split(";")[0]?.trim() ?? "";
+  }
+
   /** Extrai extensão normalizada a partir do nome original (ex: `Relatório.xlsx` → `xlsx`). */
   private extensionFromDocumentFileName(
     originalFileName: string,
@@ -1746,29 +1752,40 @@ export class WebhooksService {
     }
 
     if (mimetype) {
-      const normalized = mimetype.split(";")[0]?.trim().toLowerCase();
-      const mimeToExt: Record<string, string> = {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-          "xlsx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-          "docx",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-          "pptx",
-        "application/vnd.ms-excel": "xls",
-        "application/msword": "doc",
-        "application/vnd.ms-powerpoint": "ppt",
-        "application/pdf": "pdf",
-        "application/vnd.oasis.opendocument.text": "odt",
-        "application/vnd.oasis.opendocument.spreadsheet": "ods",
-        "application/vnd.oasis.opendocument.presentation": "odp",
-      };
-      if (normalized && mimeToExt[normalized]) {
-        return mimeToExt[normalized];
-      }
+      const cleanMime = this.sanitizeMimeType(mimetype);
+      if (cleanMime) {
+        const normalized = cleanMime.toLowerCase();
+        const mimeToExt: Record<string, string> = {
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            "xlsx",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            "docx",
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+            "pptx",
+          "application/vnd.ms-excel": "xls",
+          "application/msword": "doc",
+          "application/vnd.ms-powerpoint": "ppt",
+          "application/pdf": "pdf",
+          "application/vnd.oasis.opendocument.text": "odt",
+          "application/vnd.oasis.opendocument.spreadsheet": "ods",
+          "application/vnd.oasis.opendocument.presentation": "odp",
+          "audio/ogg": "ogg",
+          "audio/opus": "opus",
+          "audio/mpeg": "mp3",
+          "audio/mp4": "m4a",
+          "audio/webm": "webm",
+          "audio/aac": "aac",
+          "audio/x-wav": "wav",
+          "audio/wav": "wav",
+        };
+        if (mimeToExt[normalized]) {
+          return mimeToExt[normalized];
+        }
 
-      const sub = mimetype.split("/")[1]?.split(";")[0];
-      if (sub) {
-        return sub.replace("jpeg", "jpg").replace("mpeg", "mp3");
+        const sub = cleanMime.split("/")[1];
+        if (sub) {
+          return sub.replace("jpeg", "jpg").replace("mpeg", "mp3");
+        }
       }
     }
 
@@ -1820,7 +1837,9 @@ export class WebhooksService {
             console.log(`✅ [Webhook] Base64 encontrado em ${type}.base64`);
             return {
               data: mediaMsg.base64,
-              mimetype: mediaMsg.mimetype || this.getDefaultMimetype(type),
+              mimetype:
+                this.sanitizeMimeType(mediaMsg.mimetype) ||
+                this.getDefaultMimetype(type),
             };
           }
 
@@ -1829,7 +1848,9 @@ export class WebhooksService {
             console.log(`✅ [Webhook] Base64 encontrado em ${type}.media`);
             return {
               data: mediaMsg.media,
-              mimetype: mediaMsg.mimetype || this.getDefaultMimetype(type),
+              mimetype:
+                this.sanitizeMimeType(mediaMsg.mimetype) ||
+                this.getDefaultMimetype(type),
             };
           }
 

@@ -86,7 +86,29 @@ export class WebsocketGateway
     @Inject(forwardRef(() => OperatorQueueService))
     private queueService: OperatorQueueService,
     private cpcService: CpcService,
-  ) { }
+  ) {}
+
+  /**
+   * Texto gravado em `Conversation.message` no envio do operador:
+   * preserva legenda digitada; se vier só rótulo genérico de mídia, usa `fileName`.
+   */
+  private resolveOutboundConversationMessage(data: {
+    message?: string;
+    messageType?: string;
+    fileName?: string;
+  }): string {
+    const cap = data.message?.trim() ?? "";
+    const generic = new Set([
+      "Documento enviado",
+      "Imagem enviada",
+      "Vídeo enviado",
+      "Áudio enviado",
+    ]);
+    const fn = data.fileName?.trim() ?? "";
+    if (cap && !generic.has(cap)) return cap;
+    if (fn) return fn;
+    return cap || " ";
+  }
 
   async handleConnection(client: Socket) {
     try {
@@ -1918,7 +1940,7 @@ export class WebsocketGateway
         userName: user.name,
         userLine: currentLineId, // Sempre usar a linha atual
         userId: user.id, // Operador específico que está enviando
-        message: data.message,
+        message: this.resolveOutboundConversationMessage(data),
         sender: "operator",
         messageType: data.messageType || "text",
         mediaUrl: data.mediaUrl,
@@ -2334,7 +2356,7 @@ export class WebsocketGateway
             data: {
               contactPhone: data.contactPhone,
               contactName: data.contactPhone,
-              message: data.message,
+              message: this.resolveOutboundConversationMessage(data),
               sender: "operator",
               messageType: data.messageType || "text",
               mediaUrl: data.mediaUrl,

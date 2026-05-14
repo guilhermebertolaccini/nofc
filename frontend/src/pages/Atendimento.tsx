@@ -1345,19 +1345,24 @@ export default function Atendimento() {
         // operador na outra ponta consegue renderizar sem novos prefixos.
         const mediaUrl = resolveMediaUrl(data.mediaUrl) ?? data.mediaUrl;
 
+        const caption = message.trim();
+        const outboundText =
+          caption ||
+          (messageType === "document"
+            ? file.name
+            : messageType === "image"
+              ? "Imagem enviada"
+              : messageType === "video"
+                ? "Vídeo enviado"
+                : messageType === "audio"
+                  ? "Áudio enviado"
+                  : "Documento enviado");
+
         // Enviar mensagem com mídia via WebSocket
         if (isRealtimeConnected) {
           realtimeSocket.send("send-message", {
             contactPhone: selectedConversation.contactPhone,
-            message:
-              message.trim() ||
-              (messageType === "image"
-                ? "Imagem enviada"
-                : messageType === "video"
-                  ? "Vídeo enviado"
-                  : messageType === "audio"
-                    ? "Áudio enviado"
-                    : "Documento enviado"),
+            message: outboundText,
             messageType,
             mediaUrl,
             fileName: data.originalName || data.fileName, // Incluir nome do arquivo para documentos
@@ -1368,18 +1373,11 @@ export default function Atendimento() {
           await conversationsService.create({
             contactName: selectedConversation.contactName,
             contactPhone: selectedConversation.contactPhone,
-            message:
-              message.trim() ||
-              (messageType === "image"
-                ? "Imagem enviada"
-                : messageType === "video"
-                  ? "Vídeo enviado"
-                  : messageType === "audio"
-                    ? "Áudio enviado"
-                    : "Documento enviado"),
+            message: outboundText,
             sender: "operator",
             messageType,
             mediaUrl,
+            fileName: file.name,
             userName: user?.name,
             userLine: user?.lineId,
             segment: user?.segmentId,

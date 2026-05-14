@@ -90,7 +90,10 @@ export class MediaController {
       'application/octet-stream', // Genérico para tipos não reconhecidos
     ];
 
-    if (!allowedMimes.includes(file.mimetype)) {
+    // Validar tipo de arquivo — comparar só a parte principal do MIME (sem ;codecs=…)
+    const cleanMime = file.mimetype.split(";")[0]?.trim() ?? file.mimetype;
+
+    if (!allowedMimes.includes(cleanMime)) {
       throw new BadRequestException('Tipo de arquivo não permitido');
     }
 
@@ -102,7 +105,7 @@ export class MediaController {
       mediaUrl,
       fileName: file.filename,
       originalName: file.originalname,
-      mimeType: file.mimetype,
+      mimeType: cleanMime,
       size: file.size,
     };
   }

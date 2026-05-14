@@ -54,6 +54,10 @@ export class CreateConversationDto {
   @IsOptional()
   mediaUrl?: string;
 
+  @IsString()
+  @IsOptional()
+  fileName?: string; // Nome original do ficheiro (envio outbound via REST fallback)
+
   @IsOptional()
   @IsDate()
   datetime?: Date;
