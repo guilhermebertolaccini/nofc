@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -266,10 +267,20 @@ export class ConversationsController {
     @Body() body: OperatorEditMessageDto,
     @CurrentUser() user: any,
   ) {
+    const newContent =
+      body.text?.trim() ||
+      body.message?.trim() ||
+      body.newText?.trim() ||
+      "";
+    if (!newContent) {
+      throw new BadRequestException(
+        "Informe o novo texto em um dos campos: text, message ou newText.",
+      );
+    }
     return this.conversationsService.operatorEditMessage(
       user,
       +id,
-      body.text,
+      newContent,
     );
   }
 

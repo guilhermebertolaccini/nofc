@@ -30,6 +30,19 @@ export const getAuthToken = (): string | null => {
   return null;
 };
 
+/** Erro da API com status e corpo JSON (útil para debug no browser). */
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly data: unknown;
+
+  constructor(message: string, status: number, data: unknown) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.data = data;
+  }
+}
+
 // API Request helper
 async function apiRequest<T>(
   endpoint: string,
@@ -52,8 +65,18 @@ async function apiRequest<T>(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: 'Erro na requisição' }));
-    throw new Error(error.message || `HTTP error ${response.status}`);
+    const data: Record<string, unknown> = await response.json().catch(() => ({}));
+    const msg =
+      typeof data.message === 'string'
+        ? data.message
+        : typeof data.error === 'string'
+          ? data.error
+          : `HTTP error ${response.status}`;
+    const validationErrors = Array.isArray(data.errors)
+      ? (data.errors as string[]).join('; ')
+      : '';
+    const composed = validationErrors ? `${msg}: ${validationErrors}` : msg;
+    throw new ApiRequestError(composed || `HTTP error ${response.status}`, response.status, data);
   }
 
   return response.json();

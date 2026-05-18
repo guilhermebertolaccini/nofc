@@ -76,6 +76,7 @@ import {
   getAuthToken,
   API_BASE_URL,
   getDisplayTitle,
+  ApiRequestError,
 } from "@/services/api";
 import {
   useRealtimeConnection,
@@ -230,6 +231,12 @@ function parseReactionsFromRow(m: APIConversation): string[] | undefined {
 function withReactions(m: APIConversation): ChatRow {
   const reactions = parseReactionsFromRow(m);
   return reactions !== undefined ? { ...m, reactions } : { ...m };
+}
+
+/** Mensagem com correlato na Evolution (editar / apagar para todos). */
+function messageHasWaMessageId(m: Pick<APIConversation, "waMessageId">): boolean {
+  const id = m.waMessageId;
+  return typeof id === "string" && id.trim().length > 0;
 }
 
 /** Info temporária de quem está digitando na sala atual. */
@@ -1815,6 +1822,15 @@ export default function Atendimento() {
     user?.role === "supervisor";
 
   const openOperatorMessageEdit = (msg: ChatRow) => {
+    if (!messageHasWaMessageId(msg)) {
+      toast({
+        title: "Não é possível editar",
+        description:
+          "Esta mensagem não tem ID do WhatsApp (mensagem antiga). Só é possível apagar para mim.",
+        variant: "destructive",
+      });
+      return;
+    }
     setOperatorEditMessage(msg);
     setOperatorEditText(msg.message ?? "");
     setOperatorEditOpen(true);
@@ -1856,6 +1872,9 @@ export default function Atendimento() {
             : "Mensagem removida da sua visão",
       });
     } catch (e: unknown) {
+      if (e instanceof ApiRequestError) {
+        console.error("[Atendimento] operator-message/delete", e.status, e.data);
+      }
       const desc =
         e instanceof Error
           ? e.message
@@ -1906,6 +1925,9 @@ export default function Atendimento() {
       setOperatorEditMessage(null);
       toast({ title: "Mensagem editada" });
     } catch (e: unknown) {
+      if (e instanceof ApiRequestError) {
+        console.error("[Atendimento] operator-message/edit", e.status, e.data);
+      }
       const desc =
         e instanceof Error
           ? e.message
@@ -2917,6 +2939,7 @@ export default function Atendimento() {
                                   >
                                     {item.msg.sender === "operator" &&
                                       item.msg.messageType === "text" &&
+                                      messageHasWaMessageId(item.msg) &&
                                       withinWhatsAppEditWindowFrontend(
                                         item.msg.datetime,
                                       ) &&
@@ -2944,21 +2967,11 @@ export default function Atendimento() {
                                       Apagar para mim
                                     </DropdownMenuItem>
                                     {item.msg.sender === "operator" &&
+                                      messageHasWaMessageId(item.msg) &&
                                       (user?.role === "admin" ||
                                         user?.role === "supervisor" ||
                                         (user?.role === "operator" &&
                                           item.msg.userId === user?.id)) && (
-                                        <DropdownMenuItem
-                                          onClick={() =>
-                                            handleOperatorMessageDelete(
-                                              item.msg,
-                                              "everyone",
-                                            )
-                                          }
-                                        >
-                                          Apagar para todos
-                                        </DropdownMenuItem>
-                                      )}
                                   </DropdownMenuContent>
                                 </DropdownMenu>
                               )}
