@@ -5,6 +5,7 @@ import { UpdateTemplateDto } from './dto/update-template.dto';
 import { SendTemplateDto, SendTemplateMassiveDto, TemplateVariableDto } from './dto/send-template.dto';
 import { PhoneValidationService } from '../phone-validation/phone-validation.service';
 import axios from 'axios';
+import { extractWaMessageIdFromEvolutionSendResponse } from '../common/extract-wa-message-id';
 
 @Injectable()
 export class TemplatesService {
@@ -396,6 +397,9 @@ export class TemplatesService {
           userId: dto.userId || null, // ID do operador específico
           segment: dto.segment || line.segment || null, // Segmento do operador ou da linha
           userName: dto.userName || null, // Nome do operador
+          waMessageId: result.messageId
+            ? String(result.messageId).trim()
+            : undefined,
         },
       });
     }
@@ -538,19 +542,12 @@ export class TemplatesService {
           }
         );
 
-        // A resposta pode ter diferentes formatos dependendo da Evolution API
-        let messageId: string | undefined;
-        if (response.data?.key?.id) {
-          messageId = response.data.key.id;
-        } else if (response.data?.id) {
-          messageId = response.data.id;
-        } else if (response.data?.messageId) {
-          messageId = response.data.messageId;
-        }
+        const messageId =
+          extractWaMessageIdFromEvolutionSendResponse(response.data);
 
         return {
           success: true,
-          messageId,
+          messageId: messageId ?? undefined,
         };
       }
 
@@ -566,19 +563,12 @@ export class TemplatesService {
         }
       );
 
-      // A resposta pode ter diferentes formatos dependendo da Evolution API
-      let messageId: string | undefined;
-      if (response.data?.key?.id) {
-        messageId = response.data.key.id;
-      } else if (response.data?.id) {
-        messageId = response.data.id;
-      } else if (response.data?.messageId) {
-        messageId = response.data.messageId;
-      }
+      const messageId =
+        extractWaMessageIdFromEvolutionSendResponse(response.data);
 
       return {
         success: true,
-        messageId,
+        messageId: messageId ?? undefined,
       };
     } catch (error: any) {
       console.error('Erro ao enviar template via Evolution:', {

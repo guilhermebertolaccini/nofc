@@ -38,6 +38,7 @@ import { CpcService } from "../cpc/cpc.service";
 import axios from "axios";
 import * as fs from "fs/promises";
 import * as path from "path";
+import { extractWaMessageIdFromEvolutionSendResponse } from "../common/extract-wa-message-id";
 
 @WebSocketGateway({
   cors: {
@@ -1933,7 +1934,7 @@ export class WebsocketGateway
 
       // Salvar conversa usando a linha ATUAL do operador
       // Isso garante que mesmo se a linha foi trocada, a mensagem vai pela linha atual
-      const conversation = await this.conversationsService.create({
+      let conversation = await this.conversationsService.create({
         contactName: contact.name, // Agora sempre terá um nome válido
         contactPhone: data.contactPhone,
         segment: user.segment,
@@ -1951,6 +1952,23 @@ export class WebsocketGateway
           ? contact?.name || `Grupo ${data.contactPhone}`
           : undefined,
       });
+
+      const waFromEvolution =
+        extractWaMessageIdFromEvolutionSendResponse(apiResponse?.data);
+      if (waFromEvolution) {
+        conversation = await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { waMessageId: waFromEvolution },
+        });
+        await this.emitMessageUpdated(conversation);
+        console.log(
+          `📎 [WebSocket] waMessageId gravado msg#${conversation.id}: ${waFromEvolution}`,
+        );
+      } else {
+        console.warn(
+          `⚠️ [WebSocket] Resposta Evolution sem key.id — msg#${conversation.id} sem waMessageId até o webhook`,
+        );
+      }
 
       // Criar/atualizar vínculo de 24 horas entre conversa e operador (apenas para contatos individuais, não grupos)
       if (currentLineId && !isGroup) {
@@ -2352,7 +2370,7 @@ export class WebsocketGateway
           );
 
           // Salvar conversa no banco
-          const conversation = await this.prisma.conversation.create({
+          let conversation = await this.prisma.conversation.create({
             data: {
               contactPhone: data.contactPhone,
               contactName: data.contactPhone,
@@ -2365,6 +2383,17 @@ export class WebsocketGateway
               segment: user.segment,
             },
           });
+
+          const waRecovery = extractWaMessageIdFromEvolutionSendResponse(
+            apiResponse?.data,
+          );
+          if (waRecovery) {
+            conversation = await this.prisma.conversation.update({
+              where: { id: conversation.id },
+              data: { waMessageId: waRecovery },
+            });
+            await this.emitMessageUpdated(conversation);
+          }
 
           // Atualizar binding e registrar mensagem (apenas se não for grupo)
           if (!data.contactPhone.includes("@g.us")) {
