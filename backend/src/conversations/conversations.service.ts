@@ -528,6 +528,25 @@ export class ConversationsService {
   }
 
   /**
+   * ID da mensagem no WhatsApp (Baileys `key.id`) — a Evolution exige string;
+   * nunca usar o `id` interno numérico da tabela `Conversation`.
+   */
+  private requireWaMessageIdString(conversation: {
+    waMessageId: string | null;
+  }): string {
+    const raw =
+      conversation.waMessageId != null
+        ? String(conversation.waMessageId).trim()
+        : "";
+    if (!raw) {
+      throw new BadRequestException(
+        "Esta mensagem não possui o ID original do WhatsApp e não pode ser alterada na API externa.",
+      );
+    }
+    return raw;
+  }
+
+  /**
    * Soft delete local (`scope=me`) ou apagar para todos no WhatsApp + soft delete.
    */
   async operatorDeleteMessage(
@@ -535,35 +554,39 @@ export class ConversationsService {
     conversationId: number,
     scope: "me" | "everyone",
   ) {
-    const conv = await this.findOne(conversationId);
-    this.assertUserCanTouchMessage(user, conv);
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: Number(conversationId) },
+    });
+    if (!conversation) {
+      throw new NotFoundException(
+        `Conversa com ID ${conversationId} não encontrada.`,
+      );
+    }
+
+    this.assertUserCanTouchMessage(user, conversation);
 
     if (scope === "everyone") {
-      if (conv.sender !== "operator") {
+      if (conversation.sender !== "operator") {
         throw new BadRequestException(
           "Só é possível apagar para todos mensagens enviadas pelo atendimento.",
         );
       }
-      if (!conv.waMessageId) {
-        throw new BadRequestException(
-          "Mensagem sem ID do WhatsApp — não é possível apagar para todos.",
-        );
-      }
-      if (user.role === Role.operator && conv.userId !== user.id) {
+      this.requireWaMessageIdString(conversation);
+      if (user.role === Role.operator && conversation.userId !== user.id) {
         throw new ForbiddenException(
           "Apenas o autor pode apagar para todos.",
         );
       }
     }
 
-    let updated = conv;
+    let updated = conversation;
 
     if (scope === "everyone") {
-      if (!conv.userLine) {
+      if (!conversation.userLine) {
         throw new BadRequestException("Mensagem sem linha associada.");
       }
       const line = await this.prisma.linesStock.findUnique({
-        where: { id: conv.userLine },
+        where: { id: conversation.userLine },
       });
       if (!line) {
         throw new NotFoundException("Linha não encontrada.");
@@ -576,15 +599,17 @@ export class ConversationsService {
       }
       const instanceName = `line_${line.phone.replace(/\D/g, "")}`;
       const remoteJid = this.buildRemoteJidForEvolution(
-        conv.contactPhone,
-        !!conv.isGroup,
+        conversation.contactPhone,
+        !!conversation.isGroup,
       );
+      const waMessageId = this.requireWaMessageIdString(conversation);
+
       try {
         await axios.delete(
           `${evolution.evolutionUrl}/chat/deleteMessageForEveryone/${instanceName}`,
           {
             data: {
-              id: conv.waMessageId,
+              id: waMessageId,
               remoteJid,
               fromMe: true,
               participant: "",
@@ -601,12 +626,12 @@ export class ConversationsService {
         );
       }
       updated = await this.prisma.conversation.update({
-        where: { id: conv.id },
+        where: { id: conversation.id },
         data: { isDeleted: true },
       });
     } else {
       updated = await this.prisma.conversation.update({
-        where: { id: conv.id },
+        where: { id: conversation.id },
         data: { isDeleted: true },
       });
     }
@@ -625,36 +650,44 @@ export class ConversationsService {
       throw new BadRequestException("Texto inválido.");
     }
 
-    const conv = await this.findOne(conversationId);
-    this.assertUserCanTouchMessage(user, conv);
-
-    if (conv.sender !== "operator") {
-      throw new BadRequestException("Só mensagens do atendimento podem ser editadas.");
-    }
-    if (user.role === Role.operator && conv.userId !== user.id) {
-      throw new ForbiddenException("Apenas o autor pode editar.");
-    }
-    if (!conv.waMessageId) {
-      throw new BadRequestException(
-        "Mensagem sem ID do WhatsApp — não é possível editar.",
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: Number(conversationId) },
+    });
+    if (!conversation) {
+      throw new NotFoundException(
+        `Conversa com ID ${conversationId} não encontrada.`,
       );
     }
-    if (!this.withinWhatsAppEditWindow(conv.datetime)) {
+
+    this.assertUserCanTouchMessage(user, conversation);
+
+    if (conversation.sender !== "operator") {
+      throw new BadRequestException(
+        "Só mensagens do atendimento podem ser editadas.",
+      );
+    }
+    if (user.role === Role.operator && conversation.userId !== user.id) {
+      throw new ForbiddenException("Apenas o autor pode editar.");
+    }
+
+    const waMessageId = this.requireWaMessageIdString(conversation);
+
+    if (!this.withinWhatsAppEditWindow(conversation.datetime)) {
       throw new BadRequestException(
         "Prazo de edição expirado (15 minutos no WhatsApp).",
       );
     }
-    if (conv.messageType !== "text") {
+    if (conversation.messageType !== "text") {
       throw new BadRequestException(
         "Por enquanto só mensagens de texto podem ser editadas pelo painel.",
       );
     }
-    if (!conv.userLine) {
+    if (!conversation.userLine) {
       throw new BadRequestException("Mensagem sem linha associada.");
     }
 
     const line = await this.prisma.linesStock.findUnique({
-      where: { id: conv.userLine },
+      where: { id: conversation.userLine },
     });
     if (!line) throw new NotFoundException("Linha não encontrada.");
     const evolution = await this.prisma.evolution.findUnique({
@@ -664,21 +697,22 @@ export class ConversationsService {
 
     const instanceName = `line_${line.phone.replace(/\D/g, "")}`;
     const remoteJid = this.buildRemoteJidForEvolution(
-      conv.contactPhone,
-      !!conv.isGroup,
+      conversation.contactPhone,
+      !!conversation.isGroup,
     );
-    const numberVal = Number(this.numberForUpdateMessage(conv.contactPhone));
+    /** Evolution costuma esperar `number` como string (apenas dígitos). */
+    const numberStr = this.numberForUpdateMessage(conversation.contactPhone);
 
     try {
       await axios.post(
         `${evolution.evolutionUrl}/chat/updateMessage/${instanceName}`,
         {
-          number: Number.isFinite(numberVal) ? numberVal : 0,
+          number: numberStr || "0",
           text,
           key: {
             remoteJid,
             fromMe: true,
-            id: conv.waMessageId,
+            id: waMessageId,
           },
         },
         {
@@ -693,7 +727,7 @@ export class ConversationsService {
     }
 
     const updated = await this.prisma.conversation.update({
-      where: { id: conv.id },
+      where: { id: conversation.id },
       data: { message: text, isEdited: true },
     });
 
