@@ -2972,6 +2972,17 @@ export default function Atendimento() {
                                         user?.role === "supervisor" ||
                                         (user?.role === "operator" &&
                                           item.msg.userId === user?.id)) && (
+                                        <DropdownMenuItem
+                                          onClick={() =>
+                                            handleOperatorMessageDelete(
+                                              item.msg,
+                                              "everyone",
+                                            )
+                                          }
+                                        >
+                                          Apagar para todos
+                                        </DropdownMenuItem>
+                                      )}
                                   </DropdownMenuContent>
                                 </DropdownMenu>
                               )}
