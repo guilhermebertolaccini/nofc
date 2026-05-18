@@ -3039,6 +3039,99 @@ export class WebsocketGateway
   }
 
   /**
+   * Atualização de mensagem existente (edição / apagamento lógico / webhook
+   * REVOKE ou MESSAGE_EDIT). Mesmo fan-out deduplicado da room + sidebar que
+   * `emitMessageReaction`, com payload `{ message }` alinhado ao cliente.
+   */
+  async emitMessageUpdated(conversation: any) {
+    if (!conversation?.contactPhone) {
+      console.warn(
+        `⚠️ [WebSocket] emitMessageUpdated sem contactPhone — abortando`,
+      );
+      return;
+    }
+
+    const room = this.buildConversationRoom(conversation.contactPhone);
+    const payload = { message: conversation };
+
+    let socketIdsInRoom: Set<string>;
+    try {
+      const socketsInRoom = await this.server.in(room).fetchSockets();
+      socketIdsInRoom = new Set(socketsInRoom.map((s) => s.id));
+    } catch (err: any) {
+      console.warn(
+        `⚠️ [WebSocket] emitMessageUpdated fetchSockets: ${err?.message}`,
+      );
+      socketIdsInRoom = new Set();
+    }
+
+    this.server.to(room).emit("message_updated", payload);
+
+    const synthetic = {
+      contactPhone: conversation.contactPhone,
+      userLine: conversation.userLine,
+      segment: conversation.segment,
+      userId: conversation.userId,
+    };
+
+    const controlPanel = await this.controlPanelService.findOne();
+    const sharedLineMode = controlPanel?.sharedLineMode ?? false;
+    const sidebarTargets = new Set<number>();
+
+    if (!sharedLineMode && synthetic.userId) {
+      sidebarTargets.add(synthetic.userId);
+    }
+
+    if ((sharedLineMode || !synthetic.userId) && synthetic.userLine) {
+      try {
+        const lineOperators = await (this.prisma as any).lineOperator.findMany({
+          where: { lineId: synthetic.userLine },
+          include: { user: true },
+        });
+        for (const lo of lineOperators) {
+          const r = lo.user.role;
+          const allowed = sharedLineMode
+            ? r === "operator" || r === "admin" || r === "supervisor"
+            : r === "operator";
+          if (lo.user.status === "Online" && allowed) {
+            sidebarTargets.add(lo.userId);
+          }
+        }
+      } catch (err: any) {
+        console.error(
+          `❌ [WebSocket] emitMessageUpdated lineOperators:`,
+          err?.message,
+        );
+      }
+    }
+
+    if (synthetic.segment) {
+      try {
+        const supervisors = await this.prisma.user.findMany({
+          where: { role: "supervisor", segment: synthetic.segment },
+        });
+        for (const sup of supervisors) sidebarTargets.add(sup.id);
+      } catch (err: any) {
+        console.error(
+          `❌ [WebSocket] emitMessageUpdated supervisors:`,
+          err?.message,
+        );
+      }
+    }
+
+    for (const userId of sidebarTargets) {
+      const socketId = this.connectedUsers.get(userId);
+      if (!socketId) continue;
+      if (socketIdsInRoom.has(socketId)) continue;
+      this.server.to(socketId).emit("message_updated", payload);
+    }
+
+    console.log(
+      `📝 [WebSocket] message_updated → ${conversation.contactPhone} msg#${conversation.id}`,
+    );
+  }
+
+  /**
    * Emite uma `new_message` para todos os destinatários relevantes,
    * GARANTINDO que cada socket receba NO MÁXIMO 1 cópia.
    *

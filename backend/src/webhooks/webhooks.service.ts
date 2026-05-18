@@ -203,6 +203,15 @@ export class WebhooksService {
           return { status: "ignored", reason: "Line not found" };
         }
 
+        const contactIdentifierForProto = isGroup ? groupId || from : from;
+
+        const protoHandled = await this.tryHandleProtocolMessageUpsert({
+          message,
+          line,
+          contactIdentifier: contactIdentifierForProto,
+        });
+        if (protoHandled) return protoHandled;
+
         console.log(
           `🔍 [Webhook] Linha encontrada: ID ${line.id}, Phone: ${line.phone}`,
           {
@@ -1435,6 +1444,100 @@ export class WebhooksService {
     } catch (error: any) {
       console.error(`❌ [Webhook] Erro ao importar histórico:`, error.message);
     }
+  }
+
+  /**
+   * REVOKE / MESSAGE_EDIT (protocolMessage) vindos do WhatsApp. Atualiza o
+   * registro local e emite `message_updated`; não insere nova linha na conversa.
+   */
+  private async tryHandleProtocolMessageUpsert(params: {
+    message: any;
+    line: any;
+    contactIdentifier: string;
+  }): Promise<{ status: string; reason?: string } | null> {
+    const rawInner = params.message?.message;
+    const core = this.unwrapNestedMessageContent(rawInner);
+    const pm: any =
+      core?.protocolMessage ||
+      rawInner?.editedMessage?.message?.protocolMessage;
+
+    if (!pm || typeof pm !== "object") return null;
+
+    const t = pm.type;
+    const tStr = typeof t === "string" ? t.toUpperCase() : "";
+    const isRevoke = t === 0 || t === "0" || tStr === "REVOKE";
+    const hasEditedPayload = !!pm.editedMessage;
+    const isEdit =
+      t === 14 ||
+      t === "14" ||
+      tStr === "MESSAGE_EDIT" ||
+      hasEditedPayload;
+
+    if (!isRevoke && !isEdit) {
+      return {
+        status: "ignored",
+        reason: `protocolMessage type ${String(t)}`,
+      };
+    }
+
+    const rawTargetId = pm.key?.id;
+    if (rawTargetId === undefined || rawTargetId === null || rawTargetId === "") {
+      return { status: "ignored", reason: "protocolMessage sem key.id" };
+    }
+    const targetWaId = String(rawTargetId);
+
+    const findTarget = () =>
+      this.prisma.conversation.findFirst({
+        where: {
+          contactPhone: params.contactIdentifier,
+          waMessageId: targetWaId,
+        },
+        orderBy: { id: "desc" },
+      });
+
+    if (isRevoke) {
+      const target = await findTarget();
+      if (!target) {
+        return { status: "ignored", reason: "revoke target not found" };
+      }
+      const updated = await this.prisma.conversation.update({
+        where: { id: target.id },
+        data: { isDeleted: true },
+      });
+      await this.websocketGateway.emitMessageUpdated(updated);
+      console.log(
+        `🗑️ [Webhook] REVOKE → msg id=${target.id} wa=${targetWaId}`,
+      );
+      return { status: "success", reason: "revoke_applied" };
+    }
+
+    const newText = this.extractProtocolEditedBody(pm);
+    if (!newText.trim()) {
+      return { status: "ignored", reason: "edit sem texto" };
+    }
+
+    const target = await findTarget();
+    if (!target) {
+      return { status: "ignored", reason: "edit target not found" };
+    }
+    const updated = await this.prisma.conversation.update({
+      where: { id: target.id },
+      data: { message: newText.trim(), isEdited: true },
+    });
+    await this.websocketGateway.emitMessageUpdated(updated);
+    console.log(
+      `✏️ [Webhook] MESSAGE_EDIT → msg id=${target.id} wa=${targetWaId}`,
+    );
+    return { status: "success", reason: "edit_applied" };
+  }
+
+  private extractProtocolEditedBody(pm: any): string {
+    const em = pm?.editedMessage;
+    if (!em) return "";
+    const nested = em.message ?? em;
+    const fromNested = this.pickStructuredText(nested);
+    const fromEm = this.pickStructuredText(em);
+    return (fromNested || fromEm || "").trim();
   }
 
   /**

@@ -633,6 +633,10 @@ export interface Conversation {
   /** Título customizado herdado do Contact (cache opcional) */
   customTitle?: string | null;
   createdAt: string;
+  /** Apagamento lógico (painel / REVOKE no WhatsApp) */
+  isDeleted?: boolean;
+  /** Mensagem foi editada (painel ou WhatsApp) */
+  isEdited?: boolean;
 }
 
 export interface CreateConversationData {
@@ -714,6 +718,20 @@ export const conversationsService = {
     return apiRequest(`/conversations/transfer/${encodeURIComponent(phone)}`, {
       method: 'POST',
       body: JSON.stringify({ targetUserId }),
+    });
+  },
+
+  operatorDeleteMessage: async (id: number, scope: 'me' | 'everyone'): Promise<Conversation> => {
+    return apiRequest<Conversation>(`/conversations/${id}/operator-message/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ scope }),
+    });
+  },
+
+  operatorEditMessage: async (id: number, text: string): Promise<Conversation> => {
+    return apiRequest<Conversation>(`/conversations/${id}/operator-message/edit`, {
+      method: 'PATCH',
+      body: JSON.stringify({ text }),
     });
   },
 };

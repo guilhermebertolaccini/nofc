@@ -27,11 +27,14 @@ import {
   Search,
   Download,
   Paperclip,
+  MoreVertical,
+  Lock,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
@@ -274,6 +277,15 @@ export default function Atendimento() {
   const [typingUsers, setTypingUsers] = useState<Map<number, TypingInfo>>(
     new Map(),
   );
+  /** Edição de mensagem enviada pelo atendimento (Evolution / painel) */
+  const [operatorEditOpen, setOperatorEditOpen] = useState(false);
+  const [operatorEditMessage, setOperatorEditMessage] =
+    useState<ChatRow | null>(null);
+  const [operatorEditText, setOperatorEditText] = useState("");
+  const [operatorEditSaving, setOperatorEditSaving] = useState(false);
+  const [operatorMessageActionId, setOperatorMessageActionId] = useState<
+    number | null
+  >(null);
   const previousConversationsRef = useRef<ConversationGroup[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
@@ -461,6 +473,34 @@ export default function Atendimento() {
       setSelectedConversation((prev) => {
         if (!prev || prev.contactPhone !== phone) return prev;
         return patchGroup(prev);
+      });
+    },
+    [],
+  );
+
+  useRealtimeSubscription(
+    WS_EVENTS.MESSAGE_UPDATED,
+    (data: { message?: APIConversation }) => {
+      const raw = data?.message;
+      if (raw?.id == null || !raw.contactPhone) return;
+      const row = withReactions(raw);
+      const phone = raw.contactPhone;
+      setConversations((prev) =>
+        prev.map((g) =>
+          g.contactPhone !== phone
+            ? g
+            : {
+                ...g,
+                messages: g.messages.map((m) => (m.id === row.id ? row : m)),
+              },
+        ),
+      );
+      setSelectedConversation((prev) => {
+        if (!prev || prev.contactPhone !== phone) return prev;
+        return {
+          ...prev,
+          messages: prev.messages.map((m) => (m.id === row.id ? row : m)),
+        };
       });
     },
     [],
@@ -1766,6 +1806,116 @@ export default function Atendimento() {
     }
   }, [selectedTemplate, newContactName]);
 
+  const withinWhatsAppEditWindowFrontend = (datetime: string) =>
+    Date.now() - new Date(datetime).getTime() <= 15 * 60 * 1000;
+
+  const canUseOperatorMessageActions =
+    user?.role === "operator" ||
+    user?.role === "admin" ||
+    user?.role === "supervisor";
+
+  const openOperatorMessageEdit = (msg: ChatRow) => {
+    setOperatorEditMessage(msg);
+    setOperatorEditText(msg.message ?? "");
+    setOperatorEditOpen(true);
+  };
+
+  const handleOperatorMessageDelete = async (
+    msg: ChatRow,
+    scope: "me" | "everyone",
+  ) => {
+    try {
+      setOperatorMessageActionId(msg.id);
+      const updated = await conversationsService.operatorDeleteMessage(
+        msg.id,
+        scope,
+      );
+      const row = withReactions(updated);
+      const phone = msg.contactPhone;
+      setConversations((prev) =>
+        prev.map((g) =>
+          g.contactPhone !== phone
+            ? g
+            : {
+                ...g,
+                messages: g.messages.map((m) => (m.id === row.id ? row : m)),
+              },
+        ),
+      );
+      setSelectedConversation((prev) => {
+        if (!prev || prev.contactPhone !== phone) return prev;
+        return {
+          ...prev,
+          messages: prev.messages.map((m) => (m.id === row.id ? row : m)),
+        };
+      });
+      toast({
+        title:
+          scope === "everyone"
+            ? "Mensagem apagada para todos"
+            : "Mensagem removida da sua visão",
+      });
+    } catch (e: unknown) {
+      const desc =
+        e instanceof Error
+          ? e.message
+          : "Não foi possível apagar a mensagem.";
+      toast({ title: "Erro", description: desc, variant: "destructive" });
+    } finally {
+      setOperatorMessageActionId(null);
+    }
+  };
+
+  const submitOperatorMessageEdit = async () => {
+    if (!operatorEditMessage) return;
+    const text = operatorEditText.trim();
+    if (!text) {
+      toast({
+        title: "Texto vazio",
+        description: "Digite o novo texto da mensagem.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      setOperatorEditSaving(true);
+      const updated = await conversationsService.operatorEditMessage(
+        operatorEditMessage.id,
+        text,
+      );
+      const row = withReactions(updated);
+      const phone = operatorEditMessage.contactPhone;
+      setConversations((prev) =>
+        prev.map((g) =>
+          g.contactPhone !== phone
+            ? g
+            : {
+                ...g,
+                messages: g.messages.map((m) => (m.id === row.id ? row : m)),
+              },
+        ),
+      );
+      setSelectedConversation((prev) => {
+        if (!prev || prev.contactPhone !== phone) return prev;
+        return {
+          ...prev,
+          messages: prev.messages.map((m) => (m.id === row.id ? row : m)),
+        };
+      });
+      setOperatorEditOpen(false);
+      setOperatorEditMessage(null);
+      toast({ title: "Mensagem editada" });
+    } catch (e: unknown) {
+      const desc =
+        e instanceof Error
+          ? e.message
+          : "Não foi possível editar a mensagem.";
+      toast({ title: "Erro", description: desc, variant: "destructive" });
+    } finally {
+      setOperatorEditSaving(false);
+    }
+  };
+
   const formatTime = (datetime: string) => {
     try {
       return format(new Date(datetime), "HH:mm");
@@ -2598,6 +2748,68 @@ export default function Atendimento() {
                 </DialogContent>
               </Dialog>
 
+              <Dialog
+                open={operatorEditOpen}
+                onOpenChange={(open) => {
+                  setOperatorEditOpen(open);
+                  if (!open) {
+                    setOperatorEditMessage(null);
+                    setOperatorEditText("");
+                  }
+                }}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Editar mensagem</DialogTitle>
+                    <DialogDescription>
+                      O texto é atualizado no WhatsApp e no histórico (regra de
+                      até 15 minutos da API).
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-2 py-2">
+                    <Label htmlFor="operator-edit-msg">Novo texto</Label>
+                    <Textarea
+                      id="operator-edit-msg"
+                      value={operatorEditText}
+                      onChange={(e) => setOperatorEditText(e.target.value)}
+                      rows={4}
+                      className="resize-y min-h-[100px]"
+                      disabled={operatorEditSaving}
+                    />
+                  </div>
+                  <DialogFooter>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setOperatorEditOpen(false);
+                        setOperatorEditMessage(null);
+                      }}
+                      disabled={operatorEditSaving}
+                    >
+                      Cancelar
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => void submitOperatorMessageEdit()}
+                      disabled={operatorEditSaving}
+                    >
+                      {operatorEditSaving ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Salvando...
+                        </>
+                      ) : (
+                        <>
+                          <Check className="mr-2 h-4 w-4" />
+                          Salvar
+                        </>
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
               {/* Messages */}
               <ScrollArea ref={messagesScrollRef} className="flex-1 p-4">
                 <div className="space-y-4">
@@ -2672,12 +2884,106 @@ export default function Atendimento() {
                                   {item.msg.participantName}
                                 </p>
                               )}
+                            {canUseOperatorMessageActions &&
+                              !item.msg.isDeleted && (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className={cn(
+                                        "absolute top-1 right-1 h-7 w-7 shrink-0 opacity-70 hover:opacity-100",
+                                        item.msg.sender === "operator"
+                                          ? "text-primary-foreground hover:bg-primary-foreground/15"
+                                          : "text-muted-foreground hover:bg-muted",
+                                      )}
+                                      aria-label="Ações da mensagem"
+                                      disabled={
+                                        operatorMessageActionId === item.msg.id
+                                      }
+                                    >
+                                      {operatorMessageActionId ===
+                                      item.msg.id ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <MoreVertical className="h-4 w-4" />
+                                      )}
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent
+                                    align="end"
+                                    className="w-52"
+                                  >
+                                    {item.msg.sender === "operator" &&
+                                      item.msg.messageType === "text" &&
+                                      withinWhatsAppEditWindowFrontend(
+                                        item.msg.datetime,
+                                      ) &&
+                                      (user?.role === "admin" ||
+                                        user?.role === "supervisor" ||
+                                        (user?.role === "operator" &&
+                                          item.msg.userId === user?.id)) && (
+                                        <DropdownMenuItem
+                                          onClick={() =>
+                                            openOperatorMessageEdit(item.msg)
+                                          }
+                                        >
+                                          <Pencil className="mr-2 h-4 w-4" />
+                                          Editar
+                                        </DropdownMenuItem>
+                                      )}
+                                    <DropdownMenuItem
+                                      onClick={() =>
+                                        handleOperatorMessageDelete(
+                                          item.msg,
+                                          "me",
+                                        )
+                                      }
+                                    >
+                                      Apagar para mim
+                                    </DropdownMenuItem>
+                                    {item.msg.sender === "operator" &&
+                                      (user?.role === "admin" ||
+                                        user?.role === "supervisor" ||
+                                        (user?.role === "operator" &&
+                                          item.msg.userId === user?.id)) && (
+                                        <DropdownMenuItem
+                                          onClick={() =>
+                                            handleOperatorMessageDelete(
+                                              item.msg,
+                                              "everyone",
+                                            )
+                                          }
+                                        >
+                                          Apagar para todos
+                                        </DropdownMenuItem>
+                                      )}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              )}
                             {/* Renderizar mídia baseado no messageType.
                                 Todas as URLs passam por resolveMediaUrl,
                                 que devolve absoluta/relativa+API_BASE_URL/
                                 data:URI conforme o caso — eliminando o
                                 bug de "imagem quebrada no F5".
                                 Stickers usam <img> em tamanho reduzido. */}
+                            {item.msg.isDeleted ? (
+                              <div
+                                className={cn(
+                                  "flex items-center gap-2 text-sm italic pr-8",
+                                  item.msg.sender === "contact"
+                                    ? "text-muted-foreground"
+                                    : "opacity-90",
+                                )}
+                              >
+                                <Lock
+                                  className="h-4 w-4 shrink-0"
+                                  aria-hidden
+                                />
+                                <span>🚫 Mensagem apagada</span>
+                              </div>
+                            ) : (
                             {(() => {
                               const resolvedUrl = resolveMediaUrl(
                                 item.msg.mediaUrl,
@@ -2838,6 +3144,7 @@ export default function Atendimento() {
                                 </p>
                               );
                             })()}
+                            )}
                             {item.msg.reactions &&
                               item.msg.reactions.length > 0 && (
                                 <span
@@ -2849,13 +3156,18 @@ export default function Atendimento() {
                               )}
                             <p
                               className={cn(
-                                "text-xs mt-1",
+                                "text-xs mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5",
                                 item.msg.sender === "contact"
                                   ? "text-muted-foreground"
                                   : "text-primary-foreground/70",
                               )}
                             >
-                              {formatTime(item.msg.datetime)}
+                              <span>{formatTime(item.msg.datetime)}</span>
+                              {item.msg.isEdited && !item.msg.isDeleted && (
+                                <span className="opacity-90 whitespace-nowrap">
+                                  ✏️ Editado
+                                </span>
+                              )}
                             </p>
                           </div>
                           {item.msg.sender === "operator" && (

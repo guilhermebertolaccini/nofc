@@ -257,6 +257,8 @@ export const WS_EVENTS = {
   NEW_MESSAGE: 'new_message',
   /** Reação WhatsApp aplicada a uma mensagem existente (id interno) */
   MESSAGE_REACTION: 'message_reaction',
+  /** Mensagem existente atualizada (edição / apagamento lógico / webhook) */
+  MESSAGE_UPDATED: 'message_updated',
   MESSAGE_SENT: 'message-sent',
   CONVERSATION_UPDATED: 'conversation_updated',
   OPERATOR_STATUS: 'operator_status',

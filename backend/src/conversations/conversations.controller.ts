@@ -21,6 +21,8 @@ import { ConversationsService } from "./conversations.service";
 import { CreateConversationDto } from "./dto/create-conversation.dto";
 import { UpdateConversationDto } from "./dto/update-conversation.dto";
 import { TabulateConversationDto } from "./dto/tabulate-conversation.dto";
+import { OperatorDeleteMessageDto } from "./dto/operator-delete-message.dto";
+import { OperatorEditMessageDto } from "./dto/operator-edit-message.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { Roles } from "../common/decorators/roles.decorator";
@@ -238,6 +240,36 @@ export class ConversationsController {
     return this.conversationsService.findByContactPhone(
       phone,
       tabulated === "true"
+    );
+  }
+
+  @Post(":id/operator-message/delete")
+  @Roles(Role.admin, Role.supervisor, Role.operator)
+  @ApiOperation({ summary: "Apagar mensagem para mim (local) ou para todos (WhatsApp)" })
+  operatorDeleteMessage(
+    @Param("id") id: string,
+    @Body() body: OperatorDeleteMessageDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.conversationsService.operatorDeleteMessage(
+      user,
+      +id,
+      body.scope,
+    );
+  }
+
+  @Patch(":id/operator-message/edit")
+  @Roles(Role.admin, Role.supervisor, Role.operator)
+  @ApiOperation({ summary: "Editar texto da mensagem enviada pelo atendimento (WhatsApp)" })
+  operatorEditMessage(
+    @Param("id") id: string,
+    @Body() body: OperatorEditMessageDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.conversationsService.operatorEditMessage(
+      user,
+      +id,
+      body.text,
     );
   }
 

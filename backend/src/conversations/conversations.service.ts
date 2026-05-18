@@ -1,11 +1,25 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  forwardRef,
+} from "@nestjs/common";
+import { Role } from "@prisma/client";
+import axios from "axios";
 import { PrismaService } from "../prisma.service";
 import { CreateConversationDto } from "./dto/create-conversation.dto";
 import { UpdateConversationDto } from "./dto/update-conversation.dto";
+import { WebsocketGateway } from "../websocket/websocket.gateway";
 
 @Injectable()
 export class ConversationsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => WebsocketGateway))
+    private readonly websocketGateway: WebsocketGateway,
+  ) {}
 
   /**
    * Alinha com `WebsocketGateway.resolveOutboundConversationMessage`:
@@ -469,5 +483,221 @@ export class ConversationsService {
       targetOperator: targetOperator.name,
       targetUserId: targetUserId,
     };
+  }
+
+  /** JID esperado pela Evolution API (texto / apagar para todos / editar). */
+  private buildRemoteJidForEvolution(
+    contactPhone: string,
+    isGroup: boolean,
+  ): string {
+    if (isGroup || contactPhone.includes("@g.us")) {
+      return contactPhone.includes("@g.us")
+        ? contactPhone
+        : `${contactPhone}@g.us`;
+    }
+    const digits = contactPhone.replace(/\D/g, "");
+    if (!digits) return `${contactPhone}@s.whatsapp.net`;
+    return `${digits}@s.whatsapp.net`;
+  }
+
+  /** Campo `number` do updateMessage (apenas dígitos). */
+  private numberForUpdateMessage(contactPhone: string): string {
+    return contactPhone.replace(/\D/g, "") || "0";
+  }
+
+  private assertUserCanTouchMessage(
+    user: { id: number; role: Role },
+    conv: { userId: number | null; sender: string },
+  ) {
+    if (user.role === Role.admin || user.role === Role.supervisor) return;
+    if (user.role === Role.digital) {
+      throw new ForbiddenException(
+        "Perfil digital não pode editar ou apagar mensagens.",
+      );
+    }
+    if (user.role === Role.operator) {
+      if (conv.sender === "operator" && conv.userId === user.id) return;
+      if (conv.sender === "contact") return;
+      throw new ForbiddenException("Sem permissão para esta mensagem.");
+    }
+  }
+
+  private withinWhatsAppEditWindow(convDatetime: Date): boolean {
+    const limitMs = 15 * 60 * 1000;
+    return Date.now() - new Date(convDatetime).getTime() <= limitMs;
+  }
+
+  /**
+   * Soft delete local (`scope=me`) ou apagar para todos no WhatsApp + soft delete.
+   */
+  async operatorDeleteMessage(
+    user: { id: number; role: Role },
+    conversationId: number,
+    scope: "me" | "everyone",
+  ) {
+    const conv = await this.findOne(conversationId);
+    this.assertUserCanTouchMessage(user, conv);
+
+    if (scope === "everyone") {
+      if (conv.sender !== "operator") {
+        throw new BadRequestException(
+          "Só é possível apagar para todos mensagens enviadas pelo atendimento.",
+        );
+      }
+      if (!conv.waMessageId) {
+        throw new BadRequestException(
+          "Mensagem sem ID do WhatsApp — não é possível apagar para todos.",
+        );
+      }
+      if (user.role === Role.operator && conv.userId !== user.id) {
+        throw new ForbiddenException(
+          "Apenas o autor pode apagar para todos.",
+        );
+      }
+    }
+
+    let updated = conv;
+
+    if (scope === "everyone") {
+      if (!conv.userLine) {
+        throw new BadRequestException("Mensagem sem linha associada.");
+      }
+      const line = await this.prisma.linesStock.findUnique({
+        where: { id: conv.userLine },
+      });
+      if (!line) {
+        throw new NotFoundException("Linha não encontrada.");
+      }
+      const evolution = await this.prisma.evolution.findUnique({
+        where: { evolutionName: line.evolutionName },
+      });
+      if (!evolution) {
+        throw new NotFoundException("Evolution não configurada.");
+      }
+      const instanceName = `line_${line.phone.replace(/\D/g, "")}`;
+      const remoteJid = this.buildRemoteJidForEvolution(
+        conv.contactPhone,
+        !!conv.isGroup,
+      );
+      try {
+        await axios.delete(
+          `${evolution.evolutionUrl}/chat/deleteMessageForEveryone/${instanceName}`,
+          {
+            data: {
+              id: conv.waMessageId,
+              remoteJid,
+              fromMe: true,
+              participant: "",
+            },
+            headers: { apikey: evolution.evolutionKey },
+            timeout: 30000,
+          },
+        );
+      } catch (e: any) {
+        const msg =
+          e?.response?.data?.message || e?.message || "Evolution API error";
+        throw new BadRequestException(
+          `Falha ao apagar no WhatsApp: ${msg}`,
+        );
+      }
+      updated = await this.prisma.conversation.update({
+        where: { id: conv.id },
+        data: { isDeleted: true },
+      });
+    } else {
+      updated = await this.prisma.conversation.update({
+        where: { id: conv.id },
+        data: { isDeleted: true },
+      });
+    }
+
+    await this.websocketGateway.emitMessageUpdated(updated);
+    return updated;
+  }
+
+  async operatorEditMessage(
+    user: { id: number; role: Role },
+    conversationId: number,
+    newText: string,
+  ) {
+    const text = newText?.trim();
+    if (!text) {
+      throw new BadRequestException("Texto inválido.");
+    }
+
+    const conv = await this.findOne(conversationId);
+    this.assertUserCanTouchMessage(user, conv);
+
+    if (conv.sender !== "operator") {
+      throw new BadRequestException("Só mensagens do atendimento podem ser editadas.");
+    }
+    if (user.role === Role.operator && conv.userId !== user.id) {
+      throw new ForbiddenException("Apenas o autor pode editar.");
+    }
+    if (!conv.waMessageId) {
+      throw new BadRequestException(
+        "Mensagem sem ID do WhatsApp — não é possível editar.",
+      );
+    }
+    if (!this.withinWhatsAppEditWindow(conv.datetime)) {
+      throw new BadRequestException(
+        "Prazo de edição expirado (15 minutos no WhatsApp).",
+      );
+    }
+    if (conv.messageType !== "text") {
+      throw new BadRequestException(
+        "Por enquanto só mensagens de texto podem ser editadas pelo painel.",
+      );
+    }
+    if (!conv.userLine) {
+      throw new BadRequestException("Mensagem sem linha associada.");
+    }
+
+    const line = await this.prisma.linesStock.findUnique({
+      where: { id: conv.userLine },
+    });
+    if (!line) throw new NotFoundException("Linha não encontrada.");
+    const evolution = await this.prisma.evolution.findUnique({
+      where: { evolutionName: line.evolutionName },
+    });
+    if (!evolution) throw new NotFoundException("Evolution não configurada.");
+
+    const instanceName = `line_${line.phone.replace(/\D/g, "")}`;
+    const remoteJid = this.buildRemoteJidForEvolution(
+      conv.contactPhone,
+      !!conv.isGroup,
+    );
+    const numberVal = Number(this.numberForUpdateMessage(conv.contactPhone));
+
+    try {
+      await axios.post(
+        `${evolution.evolutionUrl}/chat/updateMessage/${instanceName}`,
+        {
+          number: Number.isFinite(numberVal) ? numberVal : 0,
+          text,
+          key: {
+            remoteJid,
+            fromMe: true,
+            id: conv.waMessageId,
+          },
+        },
+        {
+          headers: { apikey: evolution.evolutionKey },
+          timeout: 30000,
+        },
+      );
+    } catch (e: any) {
+      const msg =
+        e?.response?.data?.message || e?.message || "Evolution API error";
+      throw new BadRequestException(`Falha ao editar no WhatsApp: ${msg}`);
+    }
+
+    const updated = await this.prisma.conversation.update({
+      where: { id: conv.id },
+      data: { message: text, isEdited: true },
+    });
+
+    await this.websocketGateway.emitMessageUpdated(updated);
+    return updated;
   }
 }

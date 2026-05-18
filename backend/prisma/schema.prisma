@@ -252,6 +252,8 @@ model Conversation {
   waMessageId   String?
   /// JSON: array de emojis (ex. `["👍","❤️"]`) acumulados nesta mensagem
   reactionsJson String?   @db.Text
+  isDeleted    Boolean   @default(false)
+  isEdited     Boolean   @default(false)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
