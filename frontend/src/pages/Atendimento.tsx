@@ -2984,6 +2984,7 @@ export default function Atendimento() {
                                 <span>🚫 Mensagem apagada</span>
                               </div>
                             ) : (
+                            <>
                             {(() => {
                               const resolvedUrl = resolveMediaUrl(
                                 item.msg.mediaUrl,
@@ -3144,6 +3145,7 @@ export default function Atendimento() {
                                 </p>
                               );
                             })()}
+                            </>
                             )}
                             {item.msg.reactions &&
                               item.msg.reactions.length > 0 && (
