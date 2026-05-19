@@ -24,6 +24,8 @@ import {
   UserCheck,
   Clock,
   Database,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { useLocation, Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
@@ -32,6 +34,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { UserRole } from "@/types/auth";
 import { NotificationSettingsDialog } from "@/components/settings/NotificationSettingsDialog";
 import { useTheme } from "next-themes";
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface MenuItem {
   title: string;
@@ -204,12 +213,79 @@ const menuItems: MenuItem[] = [
  * `onItemClick`: callback opcional executado ao clicar em qualquer item de
  * navegação ou ação. Usado pelo `MainLayout` para fechar o Sheet do menu
  * mobile assim que o operador escolhe uma rota.
+ *
+ * `isCollapsed` / `onToggleCollapse`: modo ícones no desktop (MainLayout).
  */
 interface AppSidebarProps {
   onItemClick?: () => void;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
-export function AppSidebar({ onItemClick }: AppSidebarProps = {}) {
+function SidebarNavItem({
+  to,
+  icon: Icon,
+  iconClassName,
+  label,
+  isActive,
+  isCollapsed,
+  onClick,
+}: {
+  to?: string;
+  icon: React.ElementType;
+  iconClassName?: string;
+  label: string;
+  isActive?: boolean;
+  isCollapsed?: boolean;
+  onClick?: () => void;
+}) {
+  const className = cn(
+    "flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 w-full",
+    "hover:bg-sidebar-accent/20",
+    isActive &&
+      "bg-gradient-to-r from-primary/20 to-cyan/10 text-sidebar-foreground",
+    isCollapsed && "justify-center px-2 gap-0",
+  );
+
+  const content = (
+    <>
+      <Icon className={cn("w-5 h-5 flex-shrink-0", iconClassName)} />
+      <span
+        className={cn(
+          "text-sm font-medium text-sidebar-foreground whitespace-nowrap transition-all duration-300",
+          isCollapsed && "hidden",
+        )}
+      >
+        {label}
+      </span>
+    </>
+  );
+
+  const node = to ? (
+    <Link to={to} onClick={onClick} className={className}>
+      {content}
+    </Link>
+  ) : (
+    <button type="button" onClick={onClick} className={className}>
+      {content}
+    </button>
+  );
+
+  if (!isCollapsed) return node;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{node}</TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+export function AppSidebar({
+  onItemClick,
+  isCollapsed = false,
+  onToggleCollapse,
+}: AppSidebarProps = {}) {
   const location = useLocation();
   const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
@@ -239,114 +315,165 @@ export function AppSidebar({ onItemClick }: AppSidebarProps = {}) {
     setTheme(!theme || theme === "light" ? "dark" : "light");
   };
 
+  const themeLabel =
+    !theme || theme === "light" ? "Modo Escuro" : "Modo Claro";
+
   return (
-    <>
+    <TooltipProvider delayDuration={0}>
       {/*
         Largura:
-          - Desktop: w-64 (fixo no flex-row do MainLayout).
-          - Mobile: w-full dentro do SheetContent (já dimensionado lá).
-        Altura: h-full (o container externo — aside fixo no desktop ou
-        SheetContent no mobile — define a altura). Antes era `h-screen`,
-        que quebrava dentro do Sheet (causava 200vh efetivo).
+          - Desktop expandido: w-64.
+          - Desktop recolhido: w-16 (somente ícones).
+          - Mobile: w-full dentro do SheetContent.
       */}
-      <aside className="w-full md:w-64 h-full bg-sidebar flex flex-col">
-        {/* Logo */}
-        <div className="p-4 border-b border-sidebar-border flex justify-center flex-shrink-0">
-          <TaticaLogo size="xl" showText={false} />
+      <aside
+        className={cn(
+          "h-full bg-sidebar flex flex-col transition-all duration-300 ease-in-out",
+          "w-full",
+          isCollapsed ? "md:w-16" : "md:w-64",
+        )}
+      >
+        {/* Logo + toggle (desktop) */}
+        <div
+          className={cn(
+            "border-b border-sidebar-border flex-shrink-0 transition-all duration-300",
+            isCollapsed
+              ? "flex flex-col items-center gap-2 p-2"
+              : "flex items-center justify-between gap-2 p-4",
+          )}
+        >
+          <TaticaLogo
+            size={isCollapsed ? "sm" : "xl"}
+            showText={false}
+            className={cn(isCollapsed && "justify-center")}
+          />
+          {onToggleCollapse && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 flex-shrink-0"
+                  onClick={onToggleCollapse}
+                  aria-label={
+                    isCollapsed
+                      ? "Expandir menu de navegação"
+                      : "Recolher menu de navegação"
+                  }
+                >
+                  {isCollapsed ? (
+                    <PanelLeftOpen className="h-4 w-4" />
+                  ) : (
+                    <PanelLeftClose className="h-4 w-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {isCollapsed ? "Expandir menu" : "Recolher menu"}
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-3 overflow-y-auto scrollbar-sidebar">
+        <nav
+          className={cn(
+            "flex-1 overflow-y-auto scrollbar-sidebar transition-all duration-300",
+            isCollapsed ? "p-2" : "p-3",
+          )}
+        >
           <ul className="space-y-1">
             {filteredItems.map((item) => {
               const isActive = location.pathname === item.url;
-              const Icon = item.icon;
 
               return (
                 <li key={item.url}>
-                  <Link
+                  <SidebarNavItem
                     to={item.url}
+                    icon={item.icon}
+                    iconClassName={item.color}
+                    label={item.title}
+                    isActive={isActive}
+                    isCollapsed={isCollapsed}
                     onClick={onItemClick}
-                    className={cn(
-                      "flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
-                      "hover:bg-sidebar-accent/20",
-                      isActive &&
-                        "bg-gradient-to-r from-primary/20 to-cyan/10 text-sidebar-foreground",
-                    )}
-                  >
-                    <Icon className={cn("w-5 h-5", item.color)} />
-                    <span className="text-sm font-medium text-sidebar-foreground">
-                      {item.title}
-                    </span>
-                  </Link>
+                  />
                 </li>
               );
             })}
 
-            {/* Separador */}
             <li className="pt-2 mt-2 border-t border-sidebar-border">
-              <button
+              <SidebarNavItem
+                icon={!theme || theme === "light" ? Moon : Sun}
+                iconClassName="text-muted-foreground"
+                label={themeLabel}
+                isCollapsed={isCollapsed}
                 onClick={() => {
                   toggleTheme();
                   onItemClick?.();
                 }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
-                  "hover:bg-sidebar-accent/20 text-sidebar-foreground",
-                )}
-              >
-                {!theme || theme === "light" ? (
-                  <Moon className="w-5 h-5 text-muted-foreground" />
-                ) : (
-                  <Sun className="w-5 h-5 text-muted-foreground" />
-                )}
-                <span className="text-sm font-medium">
-                  {!theme || theme === "light" ? "Modo Escuro" : "Modo Claro"}
-                </span>
-              </button>
+              />
             </li>
 
             <li>
-              <button
+              <SidebarNavItem
+                icon={Settings}
+                iconClassName="text-muted-foreground"
+                label="Configurações"
+                isCollapsed={isCollapsed}
                 onClick={() => {
                   setIsSettingsOpen(true);
                   onItemClick?.();
                 }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
-                  "hover:bg-sidebar-accent/20 text-sidebar-foreground",
-                )}
-              >
-                <Settings className="w-5 h-5 text-muted-foreground" />
-                <span className="text-sm font-medium">Configurações</span>
-              </button>
+              />
             </li>
           </ul>
         </nav>
 
         {/* User Profile */}
-        <div className="p-4 border-t border-sidebar-border flex-shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex items-center justify-center">
+        <div
+          className={cn(
+            "border-t border-sidebar-border flex-shrink-0 transition-all duration-300",
+            isCollapsed ? "p-2" : "p-4",
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-3",
+              isCollapsed && "flex-col gap-2",
+            )}
+          >
+            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex items-center justify-center flex-shrink-0">
               <span className="text-sm font-bold text-primary-foreground">
                 {initials}
               </span>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-sidebar-foreground truncate">
-                {user.name}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {roleLabels[user.role]}
-              </p>
-            </div>
-            <button
-              onClick={logout}
-              className="p-2 rounded-lg hover:bg-sidebar-accent/20 transition-colors"
-              title="Sair"
-            >
-              <LogOut className="w-4 h-4 text-muted-foreground" />
-            </button>
+            {!isCollapsed && (
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-sidebar-foreground truncate">
+                  {user.name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {roleLabels[user.role]}
+                </p>
+              </div>
+            )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={logout}
+                  className={cn(
+                    "p-2 rounded-lg hover:bg-sidebar-accent/20 transition-colors flex-shrink-0",
+                    isCollapsed && "w-full flex justify-center",
+                  )}
+                  title="Sair"
+                  aria-label="Sair"
+                >
+                  <LogOut className="w-4 h-4 text-muted-foreground" />
+                </button>
+              </TooltipTrigger>
+              {isCollapsed && <TooltipContent side="right">Sair</TooltipContent>}
+            </Tooltip>
           </div>
         </div>
       </aside>
@@ -355,6 +482,6 @@ export function AppSidebar({ onItemClick }: AppSidebarProps = {}) {
         open={isSettingsOpen}
         onOpenChange={setIsSettingsOpen}
       />
-    </>
+    </TooltipProvider>
   );
 }

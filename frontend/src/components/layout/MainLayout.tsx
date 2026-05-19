@@ -12,13 +12,14 @@ interface MainLayoutProps {
  * Layout responsivo mobile-first.
  *
  * - `h-[100dvh]` evita o bug de altura com barra dinâmica + teclado no mobile.
- * - Desktop (md+): sidebar fixa à esquerda.
+ * - Desktop (md+): sidebar fixa à esquerda, recolhível (modo ícones).
  * - Mobile: **FAB** fixo (não ocupa fluxo no header) abre o mesmo menu em um
  *   `Sheet`. Posição `bottom` elevada para não sobrepor o composer do chat
  *   (/atendimento) e respeita `safe-area-inset-bottom` (Home Indicator).
  */
 export function MainLayout({ children }: MainLayoutProps) {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [isMainNavOpen, setIsMainNavOpen] = useState(true);
 
   return (
     <div className="h-[100dvh] flex flex-col md:flex-row w-full bg-gradient-to-br from-background via-background to-primary/5 overflow-hidden">
@@ -29,8 +30,11 @@ export function MainLayout({ children }: MainLayoutProps) {
         <div className="absolute bottom-20 left-1/3 w-72 h-72 bg-success/10 rounded-full blur-3xl" />
       </div>
 
-      <div className="hidden md:flex">
-        <AppSidebar />
+      <div className="hidden md:flex flex-shrink-0">
+        <AppSidebar
+          isCollapsed={!isMainNavOpen}
+          onToggleCollapse={() => setIsMainNavOpen((prev) => !prev)}
+        />
       </div>
 
       {/*
