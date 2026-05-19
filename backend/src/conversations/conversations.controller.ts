@@ -24,6 +24,7 @@ import { UpdateConversationDto } from "./dto/update-conversation.dto";
 import { TabulateConversationDto } from "./dto/tabulate-conversation.dto";
 import { OperatorDeleteMessageDto } from "./dto/operator-delete-message.dto";
 import { OperatorEditMessageDto } from "./dto/operator-edit-message.dto";
+import { ForwardMessageDto } from "./dto/forward-message.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { Roles } from "../common/decorators/roles.decorator";
@@ -241,6 +242,20 @@ export class ConversationsController {
     return this.conversationsService.findByContactPhone(
       phone,
       tabulated === "true"
+    );
+  }
+
+  @Post("forward")
+  @Roles(Role.admin, Role.supervisor, Role.operator)
+  @ApiOperation({ summary: "Encaminhar mensagem para outro contato ou grupo" })
+  forwardMessage(
+    @Body() body: ForwardMessageDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.conversationsService.forwardMessage(
+      user,
+      body.originalMessageId,
+      body.destinationPhone,
     );
   }
 

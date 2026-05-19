@@ -2675,8 +2675,39 @@ export class WebsocketGateway
     });
   }
 
-  // Método auxiliar para criar/atualizar vínculo de conversa com operador (24 horas)
-  private async createOrUpdateConversationBinding(
+  @SubscribeMessage("forward-message")
+  async handleForwardMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    data: { originalMessageId: number; destinationPhone: string },
+  ) {
+    const user = client.data?.user;
+    if (!user) {
+      return this.replyError(client, "Usuário não autenticado");
+    }
+    if (!data?.originalMessageId || !data?.destinationPhone?.trim()) {
+      return this.replyError(client, "Dados inválidos para encaminhamento.");
+    }
+    try {
+      const conversation = await this.conversationsService.forwardMessage(
+        user,
+        Number(data.originalMessageId),
+        data.destinationPhone.trim(),
+      );
+      return { success: true, message: conversation };
+    } catch (error: any) {
+      const msg =
+        error?.response?.message ||
+        error?.message ||
+        "Erro ao encaminhar mensagem.";
+      client.emit("message-error", {
+        error: typeof msg === "string" ? msg : JSON.stringify(msg),
+      });
+      return { success: false, error: msg };
+    }
+  }
+
+  async createOrUpdateConversationBinding(
     contactPhone: string,
     lineId: number,
     userId: number,

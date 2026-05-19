@@ -311,4 +311,176 @@ export class EvolutionService {
       },
     );
   }
+
+  /**
+   * Encaminha mensagem nativa via Evolution (quando suportado).
+   * Tenta rotas/payloads comuns entre versões/forks da API.
+   */
+  async forwardMessage(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+    params: {
+      destinationPhone: string;
+      sourceRemoteJid: string;
+      messageId: string;
+      fromMe: boolean;
+    },
+  ) {
+    const base = evolutionUrl.replace(/\/$/, '');
+    const isGroup = params.destinationPhone.includes('@g.us');
+    const number = isGroup
+      ? params.destinationPhone.trim()
+      : params.destinationPhone.replace(/\D/g, '');
+
+    const messageKey = {
+      remoteJid: params.sourceRemoteJid,
+      fromMe: params.fromMe,
+      id: params.messageId,
+    };
+
+    const bodies = [
+      { number, message: { key: messageKey } },
+      { number, messageKey },
+      {
+        number,
+        messageId: params.messageId,
+        remoteJid: params.sourceRemoteJid,
+        fromMe: params.fromMe,
+      },
+    ];
+
+    const paths = [
+      '/message/forwardMessage/',
+      '/chat/forwardMessage/',
+      '/message/sendForward/',
+    ];
+
+    let lastError: any = null;
+
+    for (const path of paths) {
+      for (const body of bodies) {
+        try {
+          return await axios.post(`${base}${path}${instanceName}`, body, {
+            headers: { apikey: evolutionKey },
+            timeout: 30000,
+          });
+        } catch (error: any) {
+          lastError = error;
+        }
+      }
+    }
+
+    throw lastError || new Error('Evolution API não suporta encaminhamento nativo');
+  }
+
+  /**
+   * Fallback: reenvia o conteúdo da mensagem para outro contato/grupo.
+   */
+  async resendMessageContent(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+    destinationPhone: string,
+    original: {
+      message: string;
+      messageType: string;
+      mediaUrl?: string | null;
+    },
+  ) {
+    const base = evolutionUrl.replace(/\/$/, '');
+    const isGroup = destinationPhone.includes('@g.us');
+    const number = isGroup
+      ? destinationPhone.trim()
+      : destinationPhone.replace(/\D/g, '');
+
+    const appUrl =
+      process.env.APP_URL || 'https://api.taticamarketing.com.br';
+    const resolvePublicMedia = (mediaUrl?: string | null) => {
+      if (!mediaUrl?.trim()) return null;
+      const trimmed = mediaUrl.trim();
+      if (trimmed.startsWith('http')) return trimmed;
+      return `${appUrl}${trimmed.startsWith('/') ? trimmed : `/${trimmed}`}`;
+    };
+
+    const type = (original.messageType || 'text').toLowerCase();
+    const caption = original.message?.trim() || ' ';
+
+    if (type === 'image' && original.mediaUrl) {
+      const mediaUrl = resolvePublicMedia(original.mediaUrl);
+      return axios.post(
+        `${base}/message/sendMedia/${instanceName}`,
+        {
+          number,
+          mediatype: 'image',
+          media: mediaUrl,
+          caption,
+        },
+        { headers: { apikey: evolutionKey }, timeout: 60000 },
+      );
+    }
+
+    if (type === 'video' && original.mediaUrl) {
+      const mediaUrl = resolvePublicMedia(original.mediaUrl);
+      return axios.post(
+        `${base}/message/sendMedia/${instanceName}`,
+        {
+          number,
+          mediatype: 'video',
+          media: mediaUrl,
+          caption,
+        },
+        { headers: { apikey: evolutionKey }, timeout: 60000 },
+      );
+    }
+
+    if (type === 'audio' && original.mediaUrl) {
+      const audioUrl = resolvePublicMedia(original.mediaUrl)!;
+      return this.sendWhatsAppAudio(
+        evolutionUrl,
+        evolutionKey,
+        instanceName,
+        number,
+        audioUrl,
+      );
+    }
+
+    if (type === 'document' && original.mediaUrl) {
+      const mediaUrl = resolvePublicMedia(original.mediaUrl);
+      return axios.post(
+        `${base}/message/sendMedia/${instanceName}`,
+        {
+          number,
+          mediatype: 'document',
+          media: mediaUrl,
+          fileName: caption !== ' ' ? caption : 'documento',
+          caption,
+        },
+        { headers: { apikey: evolutionKey }, timeout: 60000 },
+      );
+    }
+
+    if (type === 'sticker' && original.mediaUrl) {
+      const mediaUrl = resolvePublicMedia(original.mediaUrl);
+      return axios.post(
+        `${base}/message/sendMedia/${instanceName}`,
+        {
+          number,
+          mediatype: 'image',
+          media: mediaUrl,
+        },
+        { headers: { apikey: evolutionKey }, timeout: 60000 },
+      );
+    }
+
+    return axios.post(
+      `${base}/message/sendText/${instanceName}`,
+      {
+        number,
+        text: caption,
+        options: { delay: 800, linkPreview: false },
+      },
+      { headers: { apikey: evolutionKey }, timeout: 30000 },
+    );
+  }
 }

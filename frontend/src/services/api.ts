@@ -770,6 +770,16 @@ export const conversationsService = {
       body: JSON.stringify({ text }),
     });
   },
+
+  forwardMessage: async (
+    originalMessageId: number,
+    destinationPhone: string,
+  ): Promise<Conversation> => {
+    return apiRequest<Conversation>('/conversations/forward', {
+      method: 'POST',
+      body: JSON.stringify({ originalMessageId, destinationPhone }),
+    });
+  },
 };
 
 // ==================== TABULATIONS ====================

@@ -11,6 +11,7 @@ import { HumanizationModule } from '../humanization/humanization.module';
 import { RateLimitingModule } from '../rate-limiting/rate-limiting.module';
 import { SpintaxModule } from '../spintax/spintax.module';
 import { LineReputationModule } from '../line-reputation/line-reputation.module';
+import { EvolutionModule } from '../evolution/evolution.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { LineReputationModule } from '../line-reputation/line-reputation.module'
     RateLimitingModule,
     SpintaxModule,
     LineReputationModule,
+    EvolutionModule,
   ],
   controllers: [ConversationsController],
   providers: [ConversationsService, AutoMessageService, PrismaService],

@@ -12,6 +12,8 @@ import { PrismaService } from "../prisma.service";
 import { CreateConversationDto } from "./dto/create-conversation.dto";
 import { UpdateConversationDto } from "./dto/update-conversation.dto";
 import { WebsocketGateway } from "../websocket/websocket.gateway";
+import { EvolutionService } from "../evolution/evolution.service";
+import { extractWaMessageIdFromEvolutionSendResponse } from "../common/extract-wa-message-id";
 
 @Injectable()
 export class ConversationsService {
@@ -19,6 +21,7 @@ export class ConversationsService {
     private prisma: PrismaService,
     @Inject(forwardRef(() => WebsocketGateway))
     private readonly websocketGateway: WebsocketGateway,
+    private readonly evolutionService: EvolutionService,
   ) {}
 
   /**
@@ -689,6 +692,175 @@ export class ConversationsService {
 
     await this.websocketGateway.emitMessageUpdated(updated);
     return updated;
+  }
+
+  /**
+   * Encaminha uma mensagem existente para outro contato/grupo (WhatsApp Forward).
+   */
+  async forwardMessage(
+    user: { id: number; role: Role; name: string; segment?: number | null; line?: number | null },
+    originalMessageId: number,
+    destinationPhone: string,
+  ) {
+    const destPhone = destinationPhone?.trim();
+    if (!destPhone) {
+      throw new BadRequestException('Destino inválido para encaminhamento.');
+    }
+
+    const original = await this.prisma.conversation.findUnique({
+      where: { id: Number(originalMessageId) },
+    });
+    if (!original) {
+      throw new NotFoundException(
+        `Mensagem com ID ${originalMessageId} não encontrada.`,
+      );
+    }
+
+    if (original.isDeleted) {
+      throw new BadRequestException('Não é possível encaminhar mensagem apagada.');
+    }
+
+    if (original.messageType === 'reaction') {
+      throw new BadRequestException('Não é possível encaminhar reações.');
+    }
+
+    this.assertUserCanTouchMessage(user, original);
+
+    let lineId = user.line ?? null;
+    if (!lineId) {
+      const lineOperator = await this.prisma.lineOperator.findFirst({
+        where: { userId: user.id },
+        select: { lineId: true },
+      });
+      lineId = lineOperator?.lineId ?? null;
+    }
+
+    if (!lineId) {
+      throw new BadRequestException(
+        'Operador sem linha WhatsApp vinculada para encaminhar.',
+      );
+    }
+
+    const line = await this.prisma.linesStock.findUnique({
+      where: { id: lineId },
+    });
+    if (!line || line.lineStatus !== 'active') {
+      throw new BadRequestException('Linha WhatsApp não disponível.');
+    }
+
+    const evolution = await this.prisma.evolution.findUnique({
+      where: { evolutionName: line.evolutionName },
+    });
+    if (!evolution) {
+      throw new NotFoundException('Evolution não configurada.');
+    }
+
+    const instanceName = `line_${line.phone.replace(/\D/g, '')}`;
+    const sourceRemoteJid = this.buildRemoteJidForEvolution(
+      original.contactPhone,
+      !!original.isGroup,
+    );
+    const destIsGroup = destPhone.includes('@g.us');
+
+    let apiResponse: any = null;
+    let usedNativeForward = false;
+
+    const waMessageId = original.waMessageId?.trim();
+
+    if (waMessageId) {
+      try {
+        apiResponse = await this.evolutionService.forwardMessage(
+          evolution.evolutionUrl,
+          evolution.evolutionKey,
+          instanceName,
+          {
+            destinationPhone: destPhone,
+            sourceRemoteJid,
+            messageId: waMessageId,
+            fromMe: original.sender === 'operator',
+          },
+        );
+        usedNativeForward = true;
+      } catch (err: any) {
+        console.warn(
+          `[Conversations] Encaminhamento nativo falhou (msg#${original.id}), usando fallback de reenvio: ${err?.message}`,
+        );
+      }
+    }
+
+    if (!apiResponse) {
+      apiResponse = await this.evolutionService.resendMessageContent(
+        evolution.evolutionUrl,
+        evolution.evolutionKey,
+        instanceName,
+        destPhone,
+        {
+          message: original.message,
+          messageType: original.messageType,
+          mediaUrl: original.mediaUrl,
+        },
+      );
+    }
+
+    const destinationContact = await this.prisma.contact.findFirst({
+      where: { phone: destPhone },
+    });
+
+    const destinationName =
+      destinationContact?.customTitle?.trim() ||
+      destinationContact?.name?.trim() ||
+      destPhone;
+
+    const outboundText =
+      original.message?.trim() ||
+      (original.messageType === 'image'
+        ? 'Imagem enviada'
+        : original.messageType === 'video'
+          ? 'Vídeo enviado'
+          : original.messageType === 'audio'
+            ? 'Áudio enviado'
+            : original.messageType === 'document'
+              ? 'Documento enviado'
+              : 'Mensagem encaminhada');
+
+    let conversation = await this.create({
+      contactName: destinationName,
+      contactPhone: destPhone,
+      segment: user.segment ?? undefined,
+      userName: user.name,
+      userLine: lineId,
+      userId: user.id,
+      message: usedNativeForward
+        ? outboundText
+        : `↪ ${outboundText}`.replace(/^↪ ↪ /, '↪ '),
+      sender: 'operator',
+      messageType: original.messageType,
+      mediaUrl: original.mediaUrl ?? undefined,
+      isGroup: destIsGroup,
+      groupId: destIsGroup ? destPhone : undefined,
+      groupName: destIsGroup ? destinationName : undefined,
+    });
+
+    const waFromEvolution =
+      extractWaMessageIdFromEvolutionSendResponse(apiResponse?.data);
+    if (waFromEvolution) {
+      conversation = await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { waMessageId: waFromEvolution },
+      });
+    }
+
+    if (!destIsGroup) {
+      await this.websocketGateway.createOrUpdateConversationBinding(
+        destPhone,
+        lineId,
+        user.id,
+      );
+    }
+
+    await this.websocketGateway.emitNewMessage(conversation);
+
+    return conversation;
   }
 
   async operatorEditMessage(

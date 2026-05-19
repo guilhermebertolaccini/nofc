@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback, useEffect, type ChangeEvent } from "react";
 import { Play, Pause } from "lucide-react";
+import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 
 interface VoiceMessagePlayerProps {
@@ -21,6 +22,7 @@ export function VoiceMessagePlayer({
   className,
   isOutbound = false,
 }: VoiceMessagePlayerProps) {
+  const { resolvedTheme } = useTheme();
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -65,28 +67,33 @@ export function VoiceMessagePlayer({
   const progressPercent =
     duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
 
+  const trackUnfilled = isOutbound
+    ? "rgba(255, 255, 255, 0.1)"
+    : resolvedTheme === "dark"
+      ? "rgba(255, 255, 255, 0.12)"
+      : "rgba(0, 0, 0, 0.12)";
+
+  const displayTime = isPlaying
+    ? formatAudioTime(currentTime)
+    : formatAudioTime(duration);
+
   return (
     <div
       className={cn(
-        "flex items-center gap-3 w-64 max-w-full min-w-[200px]",
+        "flex items-center gap-3 w-64 max-w-full p-1",
         className,
       )}
     >
       <button
         type="button"
         onClick={togglePlay}
-        className={cn(
-          "flex-shrink-0 h-10 w-10 rounded-full flex items-center justify-center transition-colors",
-          isOutbound
-            ? "bg-primary-foreground/15 hover:bg-primary-foreground/25 text-primary-foreground"
-            : "bg-primary/10 hover:bg-primary/20 text-primary",
-        )}
+        className="flex items-center justify-center rounded-full p-2 bg-emerald-500 hover:bg-emerald-600 transition-colors shrink-0 shadow-sm"
         aria-label={isPlaying ? "Pausar áudio" : "Reproduzir áudio"}
       >
         {isPlaying ? (
-          <Pause className="h-4 w-4 fill-current" />
+          <Pause className="w-5 h-5 text-white fill-white" />
         ) : (
-          <Play className="h-4 w-4 fill-current ml-0.5" />
+          <Play className="w-5 h-5 text-white fill-white ml-0.5" />
         )}
       </button>
 
@@ -98,39 +105,21 @@ export function VoiceMessagePlayer({
         value={currentTime}
         onChange={handleSeek}
         aria-label="Progresso do áudio"
-        className={cn(
-          "flex-1 h-1.5 rounded-full appearance-none cursor-pointer",
-          "bg-black/10 dark:bg-white/15",
-          isOutbound ? "accent-primary-foreground" : "accent-primary",
-          "[&::-webkit-slider-thumb]:appearance-none",
-          "[&::-webkit-slider-thumb]:h-3",
-          "[&::-webkit-slider-thumb]:w-3",
-          "[&::-webkit-slider-thumb]:rounded-full",
-          isOutbound
-            ? "[&::-webkit-slider-thumb]:bg-primary-foreground"
-            : "[&::-webkit-slider-thumb]:bg-primary",
-          "[&::-moz-range-thumb]:h-3",
-          "[&::-moz-range-thumb]:w-3",
-          "[&::-moz-range-thumb]:rounded-full",
-          "[&::-moz-range-thumb]:border-0",
-          isOutbound
-            ? "[&::-moz-range-thumb]:bg-primary-foreground"
-            : "[&::-moz-range-thumb]:bg-primary",
-        )}
+        className="audio-slider flex-grow h-4"
         style={{
-          background: isOutbound
-            ? `linear-gradient(to right, rgba(255,255,255,0.85) ${progressPercent}%, rgba(255,255,255,0.2) ${progressPercent}%)`
-            : `linear-gradient(to right, hsl(var(--primary)) ${progressPercent}%, rgba(0,0,0,0.1) ${progressPercent}%)`,
+          background: `linear-gradient(to right, #10b981 ${progressPercent}%, ${trackUnfilled} ${progressPercent}%)`,
         }}
       />
 
       <span
         className={cn(
-          "text-xs tabular-nums flex-shrink-0 min-w-[4.75rem] text-right",
-          isOutbound ? "text-primary-foreground/80" : "text-muted-foreground",
+          "text-xs tabular-nums min-w-[35px] text-right shrink-0",
+          isOutbound
+            ? "text-white/70"
+            : "text-foreground/60 dark:text-white/70",
         )}
       >
-        {formatAudioTime(currentTime)} / {formatAudioTime(duration)}
+        {displayTime}
       </span>
 
       <audio
@@ -149,6 +138,7 @@ export function VoiceMessagePlayer({
         }}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
+        onDurationChange={handleLoadedMetadata}
       />
     </div>
   );

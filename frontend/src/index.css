@@ -259,3 +259,66 @@ All colors MUST be HSL.
     display: block !important;
   }
 }
+
+/* Customização do Slider de Áudio (Range input) */
+input[type="range"].audio-slider {
+  -webkit-appearance: none;
+  width: 100%;
+  background: transparent;
+}
+
+input[type="range"].audio-slider:focus {
+  outline: none;
+}
+
+/* Estilo do Track (Linha de progresso) - Webkit (Chrome/Safari) */
+input[type="range"].audio-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+  background: transparent;
+  border-radius: 2px;
+}
+
+/* Estilo do Thumb (Bolinha/Cursor) - Webkit (Chrome/Safari) */
+input[type="range"].audio-slider::-webkit-slider-thumb {
+  height: 12px;
+  width: 12px;
+  border-radius: 50%;
+  background: #10b981;
+  cursor: pointer;
+  -webkit-appearance: none;
+  margin-top: -4px;
+  transition: background 0.2s, transform 0.2s;
+}
+
+input[type="range"].audio-slider::-webkit-slider-thumb:hover {
+  background: #34d399;
+  transform: scale(1.1);
+}
+
+/* Estilo do Track - Mozilla (Firefox) */
+input[type="range"].audio-slider::-moz-range-track {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+  background: transparent;
+  border-radius: 2px;
+  border: none;
+}
+
+/* Estilo do Thumb - Mozilla (Firefox) */
+input[type="range"].audio-slider::-moz-range-thumb {
+  height: 12px;
+  width: 12px;
+  border-radius: 50%;
+  background: #10b981;
+  cursor: pointer;
+  border: 0;
+  transition: background 0.2s, transform 0.2s;
+}
+
+input[type="range"].audio-slider::-moz-range-thumb:hover {
+  background: #34d399;
+  transform: scale(1.1);
+}

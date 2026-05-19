@@ -38,10 +38,12 @@ import {
   PinOff,
   Mic,
   Trash2,
+  Forward,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { ContactAvatar } from "@/components/ContactAvatar";
 import { VoiceMessagePlayer } from "@/components/chat/VoiceMessagePlayer";
+import { ForwardMessageModal } from "@/components/chat/ForwardMessageModal";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -347,6 +349,9 @@ export default function Atendimento() {
   const [operatorMessageActionId, setOperatorMessageActionId] = useState<
     number | null
   >(null);
+  const [forwardOpen, setForwardOpen] = useState(false);
+  const [forwardMessage, setForwardMessage] = useState<ChatRow | null>(null);
+  const [isForwarding, setIsForwarding] = useState(false);
   const previousConversationsRef = useRef<ConversationGroup[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
@@ -2347,6 +2352,46 @@ export default function Atendimento() {
     }
   };
 
+  const openForwardMessage = (msg: ChatRow) => {
+    if (msg.isDeleted || msg.messageType === "reaction") {
+      toast({
+        title: "Não é possível encaminhar",
+        description: "Esta mensagem não pode ser encaminhada.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setForwardMessage(msg);
+    setForwardOpen(true);
+  };
+
+  const handleForwardConfirm = async (destinationPhone: string) => {
+    if (!forwardMessage) return;
+    try {
+      setIsForwarding(true);
+      await conversationsService.forwardMessage(
+        forwardMessage.id,
+        destinationPhone,
+      );
+      setForwardOpen(false);
+      setForwardMessage(null);
+      playSuccessSound();
+      toast({
+        title: "Mensagem encaminhada",
+        description: "A mensagem foi enviada para o destino selecionado.",
+      });
+    } catch (e: unknown) {
+      playErrorSound();
+      const desc =
+        e instanceof Error
+          ? e.message
+          : "Não foi possível encaminhar a mensagem.";
+      toast({ title: "Erro", description: desc, variant: "destructive" });
+    } finally {
+      setIsForwarding(false);
+    }
+  };
+
   const formatTime = (datetime: string) => {
     try {
       return format(new Date(datetime), "HH:mm");
@@ -3295,6 +3340,26 @@ export default function Atendimento() {
                 </DialogContent>
               </Dialog>
 
+              <ForwardMessageModal
+                open={forwardOpen}
+                onOpenChange={(open) => {
+                  setForwardOpen(open);
+                  if (!open) setForwardMessage(null);
+                }}
+                messagePreview={forwardMessage?.message}
+                messageType={forwardMessage?.messageType}
+                excludeContactPhone={selectedConversation?.contactPhone}
+                destinations={conversations.map((c) => ({
+                  contactPhone: c.contactPhone,
+                  contactName: c.contactName,
+                  customTitle: c.customTitle,
+                  isGroup: c.isGroup,
+                  profilePicUrl: c.profilePicUrl,
+                }))}
+                onConfirm={handleForwardConfirm}
+                isForwarding={isForwarding}
+              />
+
               {/* Messages */}
               <ScrollArea ref={messagesScrollRef} className="flex-1 p-4">
                 <div className="space-y-4">
@@ -3421,6 +3486,12 @@ export default function Atendimento() {
                                           Editar
                                         </DropdownMenuItem>
                                       )}
+                                    <DropdownMenuItem
+                                      onClick={() => openForwardMessage(item.msg)}
+                                    >
+                                      <Forward className="mr-2 h-4 w-4" />
+                                      Encaminhar
+                                    </DropdownMenuItem>
                                     <DropdownMenuItem
                                       onClick={() =>
                                         handleOperatorMessageDelete(
