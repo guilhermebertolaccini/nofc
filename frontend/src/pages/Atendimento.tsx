@@ -9,7 +9,7 @@ import {
   Plus,
   Send,
   FileText,
-  File,
+  File as FileIcon,
   MessageCircle,
   ArrowRight,
   ArrowLeft,
@@ -21,7 +21,7 @@ import {
   UserCheck,
   X,
   Check,
-  Phone,
+  Phone as PhoneIcon,
   AlertTriangle,
   RefreshCw,
   Search,
@@ -1381,7 +1381,7 @@ export default function Atendimento() {
 
   // Função para fazer upload de arquivo
   const handleFileUpload = useCallback(
-    async (file: File) => {
+    async (file: globalThis.File) => {
       const resetFileInput = () => {
         if (fileInputRef.current) fileInputRef.current.value = "";
       };
@@ -3307,12 +3307,12 @@ export default function Atendimento() {
                                           "break-all",
                                         )}
                                       >
-                                        <File className="h-4 w-4 flex-shrink-0" aria-hidden />
+                                        <FileIcon className="h-4 w-4 flex-shrink-0" aria-hidden />
                                         {docLabel}
                                       </a>
                                     ) : (
                                       <span className="flex items-center gap-2 text-sm break-all opacity-80">
-                                        <File className="h-4 w-4 flex-shrink-0" aria-hidden />
+                                        <FileIcon className="h-4 w-4 flex-shrink-0" aria-hidden />
                                         {renderTextWithLinks(
                                           docLabel,
                                           handlePhoneClick,
@@ -3634,7 +3634,7 @@ export default function Atendimento() {
                                 </>
                               ) : (
                                 <>
-                                  <Phone className="mr-2 h-4 w-4" />
+                                  <PhoneIcon className="mr-2 h-4 w-4" />
                                   Rechamar
                                 </>
                               )}
@@ -3706,7 +3706,7 @@ export default function Atendimento() {
                     </>
                   ) : (
                     <>
-                      <Phone className="mr-2 h-4 w-4" />
+                      <PhoneIcon className="mr-2 h-4 w-4" />
                       Rechamar Todos
                     </>
                   )}

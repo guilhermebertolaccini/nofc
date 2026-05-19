@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /** Aceita só http(s) para evitar javascript: e outros esquemas em href. */
@@ -83,17 +83,20 @@ export function renderTextWithLinks(
   onPhoneClick?: (phone: string) => void,
   isOutbound?: boolean,
 ): ReactNode {
-  if (!text) return null;
+  const source =
+    typeof text === "string" ? text : text == null ? "" : String(text);
+  if (!source) return null;
 
-  const segments = collectSegments(text);
-  if (segments.length === 0) return text;
+  const segments = collectSegments(source);
+  if (segments.length === 0) return source;
 
   const parts: ReactNode[] = [];
   let last = 0;
   let k = 0;
+  const canHandlePhone = typeof onPhoneClick === "function";
 
   for (const seg of segments) {
-    if (seg.start > last) parts.push(text.slice(last, seg.start));
+    if (seg.start > last) parts.push(source.slice(last, seg.start));
 
     if (seg.type === "url") {
       let core = seg.raw;
@@ -127,33 +130,26 @@ export function renderTextWithLinks(
       } else {
         parts.push(seg.raw);
       }
-    } else if (seg.type === "phone" && onPhoneClick) {
+    } else if (seg.type === "phone" && canHandlePhone) {
       const cleanPhone = normalizeBrazilPhoneDigits(seg.raw);
       parts.push(
-        <span
+        <button
           key={`phone-${k++}`}
-          role="button"
-          tabIndex={0}
+          type="button"
           className={cn(
-            "underline cursor-pointer font-semibold break-all",
+            "inline underline cursor-pointer font-semibold break-all bg-transparent border-0 p-0 text-left align-baseline",
             isOutbound
               ? "text-green-200 hover:text-white"
               : "text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300",
           )}
           onClick={(e) => {
+            e.preventDefault();
             e.stopPropagation();
             onPhoneClick(cleanPhone);
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              e.stopPropagation();
-              onPhoneClick(cleanPhone);
-            }
-          }}
         >
           {seg.raw}
-        </span>,
+        </button>,
       );
     } else {
       parts.push(seg.raw);
@@ -162,8 +158,8 @@ export function renderTextWithLinks(
     last = seg.end;
   }
 
-  if (last < text.length) parts.push(text.slice(last));
+  if (last < source.length) parts.push(source.slice(last));
   if (parts.length === 0) return null;
   if (parts.length === 1) return parts[0];
-  return <>{parts}</>;
+  return <Fragment>{parts}</Fragment>;
 }
