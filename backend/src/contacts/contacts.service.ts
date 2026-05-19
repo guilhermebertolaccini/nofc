@@ -136,7 +136,7 @@ export class ContactsService {
 
   private async resolveDefaultEvolutionContext() {
     const line = await this.prisma.linesStock.findFirst({
-      where: { lineStatus: 'connected' },
+      where: { lineStatus: 'active' },
       orderBy: { id: 'desc' },
     });
 
