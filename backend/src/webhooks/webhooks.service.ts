@@ -52,9 +52,14 @@ export class WebhooksService {
           return { status: "ignored", reason: "No message data or key" };
         }
 
-        if (this.isPlaceholderMessage(message, data)) {
-          console.log("[Webhook] Ignorando placeholderMessage");
-          return { status: "ignored", reason: "placeholderMessage" };
+        if (this.isIgnoredMessage(message, data)) {
+          const kind =
+            message?.messageType ??
+            data?.messageType ??
+            this.getMessageType(message?.message) ??
+            "system_message";
+          console.log(`[Webhook] Ignorando mensagem sistêmica: ${kind}`);
+          return { status: "ignored", reason: kind };
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -1090,16 +1095,33 @@ export class WebhooksService {
     }
   }
 
+  /** Tipos Baileys/Evolution que não são mensagens visíveis no chat. */
+  private static readonly IGNORED_MESSAGE_TYPES = new Set([
+    "placeholderMessage",
+    "secretEncryptedMessage",
+  ]);
+
   /**
-   * Eventos de sincronização de criptografia do WhatsApp — não são mensagens visíveis.
+   * Mensagens sistêmicas do WhatsApp (criptografia, placeholders, etc.) —
+   * não devem persistir no banco nem ir ao WebSocket.
    */
-  private isPlaceholderMessage(message: any, data?: any): boolean {
+  private isIgnoredMessage(message: any, data?: any): boolean {
     const topType = message?.messageType ?? data?.messageType;
-    if (topType === "placeholderMessage") return true;
-    if (message?.placeholderMessage) return true;
+    if (topType && WebhooksService.IGNORED_MESSAGE_TYPES.has(topType)) {
+      return true;
+    }
+
+    if (message?.placeholderMessage || message?.secretEncryptedMessage) {
+      return true;
+    }
+
     const inner = message?.message;
-    if (inner?.placeholderMessage) return true;
-    return this.getMessageType(inner) === "placeholderMessage";
+    if (inner?.placeholderMessage || inner?.secretEncryptedMessage) {
+      return true;
+    }
+
+    const resolvedType = this.getMessageType(inner);
+    return WebhooksService.IGNORED_MESSAGE_TYPES.has(resolvedType);
   }
 
   /**
@@ -1515,6 +1537,11 @@ export class WebhooksService {
           // histórico real, incluindo respostas dadas por fora do sistema.
           for (const msg of messages) {
             try {
+              if (this.isIgnoredMessage(msg)) {
+                skipped++;
+                continue;
+              }
+
               const isFromMe = !!msg.key?.fromMe;
 
               const messageText =
@@ -1906,6 +1933,7 @@ export class WebhooksService {
 
   private getMessageType(message: any): string {
     const m = this.unwrapNestedMessageContent(message);
+    if (m?.secretEncryptedMessage) return "secretEncryptedMessage";
     if (m?.placeholderMessage) return "placeholderMessage";
     if (m?.reactionMessage) return "reaction";
     if (

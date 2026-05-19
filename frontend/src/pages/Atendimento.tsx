@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { ContactAvatar } from "@/components/ContactAvatar";
+import { VoiceMessagePlayer } from "@/components/chat/VoiceMessagePlayer";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -3552,15 +3553,12 @@ export default function Atendimento() {
                               ) {
                                 return (
                                   <div className="mb-2">
-                                    {createElement(
-                                      "audio",
-                                      {
-                                        controls: true,
-                                        className: "max-w-full",
-                                        src: resolvedUrl,
-                                      },
-                                      "Seu navegador não suporta áudio.",
-                                    )}
+                                    <VoiceMessagePlayer
+                                      src={resolvedUrl}
+                                      isOutbound={
+                                        item.msg.sender === "operator"
+                                      }
+                                    />
                                   </div>
                                 );
                               }
