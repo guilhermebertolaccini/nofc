@@ -40,6 +40,44 @@ export class MediaService {
   }
 
   /**
+   * Lê mídia enviada pelo operador (/media/...) e retorna data URI para a Evolution.
+   */
+  async readUploadedMediaAsDataUri(
+    mediaUrl: string,
+  ): Promise<{ dataUri: string; mimeType: string }> {
+    let filename: string;
+
+    if (mediaUrl.startsWith('/media/')) {
+      filename = mediaUrl.replace('/media/', '');
+    } else if (mediaUrl.startsWith('http')) {
+      const urlPath = new URL(mediaUrl).pathname;
+      filename = urlPath.replace(/^\/media\//, '');
+    } else {
+      filename = mediaUrl.replace(/^\/media\//, '');
+    }
+
+    const filePath = await this.getFilePath(filename);
+    const buffer = await fs.readFile(filePath);
+
+    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+    const mimeByExt: Record<string, string> = {
+      webm: 'audio/webm',
+      ogg: 'audio/ogg',
+      mp3: 'audio/mpeg',
+      m4a: 'audio/mp4',
+      wav: 'audio/wav',
+      aac: 'audio/aac',
+      flac: 'audio/flac',
+    };
+    const mimeType = mimeByExt[ext] || 'audio/webm';
+
+    return {
+      dataUri: `data:${mimeType};base64,${buffer.toString('base64')}`,
+      mimeType,
+    };
+  }
+
+  /**
    * Download de mídia da Evolution (quando webhook recebe mídia)
    */
   async downloadMediaFromEvolution(mediaUrl: string, fileName: string): Promise<string> {

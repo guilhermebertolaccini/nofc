@@ -13,7 +13,7 @@ interface SendMessageOptions {
   instanceName: string;
   contactPhone: string;
   message: string;
-  messageType?: 'text' | 'image' | 'document';
+  messageType?: 'text' | 'image' | 'document' | 'audio';
   mediaUrl?: string;
   fileName?: string;
   traceId?: string;
@@ -79,6 +79,23 @@ export class MessageSendingService {
               headers: { 'apikey': evolutionKey },
               timeout: 30000,
             }
+          );
+        } else if (messageType === 'audio' && mediaUrl) {
+          return await axios.post(
+            `${evolutionUrl}/message/sendWhatsAppAudio/${instanceName}`,
+            {
+              number: cleanPhone,
+              audio: mediaUrl,
+              encoding: true,
+              options: {
+                delay: 1200,
+                presence: 'recording',
+              },
+            },
+            {
+              headers: { 'apikey': evolutionKey },
+              timeout: 60000,
+            },
           );
         } else {
           return await axios.post(

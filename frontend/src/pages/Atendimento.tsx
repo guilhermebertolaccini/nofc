@@ -1648,32 +1648,29 @@ export default function Atendimento() {
 
         const data = await response.json();
         const messageType = getMessageTypeFromMime(data.mimeType);
-        // Normaliza para URL absoluta antes de enviar via WebSocket —
-        // assim a mensagem persiste no banco com URL pronta para uso e o
-        // operador na outra ponta consegue renderizar sem novos prefixos.
         const mediaUrl = resolveMediaUrl(data.mediaUrl) ?? data.mediaUrl;
 
         const caption = message.trim();
         const outboundText =
-          caption ||
-          (messageType === "document"
-            ? file.name
-            : messageType === "image"
-              ? "Imagem enviada"
-              : messageType === "video"
-                ? "Vídeo enviado"
-                : messageType === "audio"
-                  ? "Áudio enviado"
-                  : "Documento enviado");
+          messageType === "audio"
+            ? caption
+            : caption ||
+              (messageType === "document"
+                ? file.name
+                : messageType === "image"
+                  ? "Imagem enviada"
+                  : messageType === "video"
+                    ? "Vídeo enviado"
+                    : "Documento enviado");
 
         // Enviar mensagem com mídia via WebSocket
         if (isRealtimeConnected) {
           realtimeSocket.send("send-message", {
             contactPhone: selectedConversation.contactPhone,
-            message: outboundText,
-            messageType,
+            message: outboundText || " ",
+            messageType: messageType === "audio" ? "audio" : messageType,
             mediaUrl,
-            fileName: data.originalName || data.fileName, // Incluir nome do arquivo para documentos
+            fileName: data.originalName || data.fileName,
             isAdminTest: isAdminTestMode && user?.role === "admin",
           });
         } else {
@@ -1681,9 +1678,9 @@ export default function Atendimento() {
           await conversationsService.create({
             contactName: selectedConversation.contactName,
             contactPhone: selectedConversation.contactPhone,
-            message: outboundText,
+            message: outboundText || " ",
             sender: "operator",
-            messageType,
+            messageType: messageType === "audio" ? "audio" : messageType,
             mediaUrl,
             fileName: file.name,
             userName: user?.name,

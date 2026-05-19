@@ -21,6 +21,7 @@ import { LoggerModule } from '../logger/logger.module';
 import { TemplatesModule } from '../templates/templates.module';
 import { OperatorQueueModule } from '../operator-queue/operator-queue.module';
 import { CpcModule } from '../cpc/cpc.module';
+import { EvolutionModule } from '../evolution/evolution.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { CpcModule } from '../cpc/cpc.module';
     TemplatesModule,
     forwardRef(() => OperatorQueueModule),
     CpcModule,
+    EvolutionModule,
   ],
   providers: [WebsocketGateway, PrismaService],
   exports: [WebsocketGateway],

@@ -35,6 +35,7 @@ import { TemplatesService } from "../templates/templates.service";
 import { TemplateVariableDto } from "../templates/dto/send-template.dto";
 import { OperatorQueueService } from "../operator-queue/operator-queue.service";
 import { CpcService } from "../cpc/cpc.service";
+import { EvolutionService } from "../evolution/evolution.service";
 import axios from "axios";
 import * as fs from "fs/promises";
 import * as path from "path";
@@ -87,7 +88,49 @@ export class WebsocketGateway
     @Inject(forwardRef(() => OperatorQueueService))
     private queueService: OperatorQueueService,
     private cpcService: CpcService,
+    private evolutionService: EvolutionService,
   ) {}
+
+  private normalizeOutboundMessageType(
+    messageType?: string,
+    mediaUrl?: string,
+  ): string {
+    const raw = (messageType || "text").toLowerCase().trim();
+    if (raw === "audio" || raw.startsWith("audio/")) return "audio";
+    if (raw === "video" || raw.startsWith("video/")) return "video";
+    if (raw === "image" || raw.startsWith("image/")) return "image";
+    if (raw === "document") return "document";
+
+    if (mediaUrl) {
+      const pathOnly = mediaUrl.split("?")[0].toLowerCase();
+      if (/\.(webm|ogg|mp3|m4a|wav|aac|flac)(\?|$)/.test(pathOnly)) {
+        return "audio";
+      }
+    }
+
+    return messageType || "text";
+  }
+
+  private async resolveAudioForEvolution(mediaUrl: string): Promise<string> {
+    const appUrl =
+      process.env.APP_URL || "https://api.taticamarketing.com.br";
+    const isOurServer =
+      mediaUrl.startsWith("/media/") ||
+      mediaUrl.startsWith(appUrl) ||
+      mediaUrl.includes("/media/");
+
+    if (isOurServer) {
+      const { dataUri } =
+        await this.mediaService.readUploadedMediaAsDataUri(mediaUrl);
+      return dataUri;
+    }
+
+    if (mediaUrl.startsWith("http")) {
+      return mediaUrl;
+    }
+
+    return `${appUrl}${mediaUrl.startsWith("/") ? mediaUrl : `/${mediaUrl}`}`;
+  }
 
   /**
    * Texto gravado em `Conversation.message` no envio do operador:
@@ -99,6 +142,9 @@ export class WebsocketGateway
     fileName?: string;
   }): string {
     const cap = data.message?.trim() ?? "";
+    if (data.messageType === "audio" && !cap) {
+      return " ";
+    }
     const generic = new Set([
       "Documento enviado",
       "Imagem enviada",
@@ -683,6 +729,10 @@ export class WebsocketGateway
     try {
       // Detectar se é grupo (grupos têm @g.us no contactPhone)
       const isGroup = data.contactPhone?.includes("@g.us") || false;
+      data.messageType = this.normalizeOutboundMessageType(
+        data.messageType,
+        data.mediaUrl,
+      );
 
       // IMPORTANTE: Verificações de CPC, repescagem e validação são APENAS para contatos individuais
       if (!isGroup) {
@@ -1814,6 +1864,30 @@ export class WebsocketGateway
           });
           throw mediaError;
         }
+      } else if (data.messageType === "audio" && data.mediaUrl) {
+        const targetNumber = isGroup
+          ? data.contactPhone
+          : data.contactPhone.replace(/\D/g, "");
+
+        apiResponse = await tryReallocateAndResend(async () => {
+          const audioPayload = await this.resolveAudioForEvolution(
+            data.mediaUrl!,
+          );
+
+          console.log(
+            `🎤 [WebSocket] Enviando mensagem de voz (PTT) para ${isGroup ? "grupo" : "contato"} ${targetNumber}`,
+          );
+
+          return this.evolutionService.sendWhatsAppAudio(
+            evolution.evolutionUrl,
+            evolution.evolutionKey,
+            instanceName,
+            targetNumber,
+            audioPayload,
+          );
+        });
+
+        console.log(`✅ [WebSocket] Áudio enviado via sendWhatsAppAudio`);
       } else {
         // Mensagem de texto normal - usar realocação automática se necessário
         // isGroup já foi definido no início do try block (linha ~880)
@@ -2333,17 +2407,18 @@ export class WebsocketGateway
               }
             }
           } else if (data.messageType === "audio" && data.mediaUrl) {
-            apiResponse = await axios.post(
-              `${evolution.evolutionUrl}/message/sendWhatsAppAudio/${instanceName}`,
-              {
-                number: data.contactPhone.replace(/\D/g, ""),
-                audio: data.mediaUrl,
-                speakerAudio: true,
-              },
-              {
-                headers: { apikey: evolution.evolutionKey },
-                timeout: 30000,
-              },
+            const targetNumber = data.contactPhone.includes("@g.us")
+              ? data.contactPhone
+              : data.contactPhone.replace(/\D/g, "");
+            const audioPayload = await this.resolveAudioForEvolution(
+              data.mediaUrl,
+            );
+            apiResponse = await this.evolutionService.sendWhatsAppAudio(
+              evolution.evolutionUrl,
+              evolution.evolutionKey,
+              instanceName,
+              targetNumber,
+              audioPayload,
             );
           } else {
             // Texto simples
