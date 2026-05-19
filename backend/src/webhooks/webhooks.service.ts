@@ -1076,6 +1076,13 @@ export class WebhooksService {
         }
       }
 
+      if (
+        data.event === "contacts.update" ||
+        data.event === "CONTACTS_UPDATE"
+      ) {
+        return this.handleContactsUpdate(data);
+      }
+
       return { status: "processed" };
     } catch (error) {
       console.error("Erro ao processar webhook:", error);
@@ -1093,6 +1100,86 @@ export class WebhooksService {
     const inner = message?.message;
     if (inner?.placeholderMessage) return true;
     return this.getMessageType(inner) === "placeholderMessage";
+  }
+
+  /**
+   * Atualiza fotos de perfil quando a Evolution dispara contacts.update.
+   */
+  private async handleContactsUpdate(data: any) {
+    const rawItems = Array.isArray(data?.data)
+      ? data.data
+      : data?.data
+        ? [data.data]
+        : [];
+
+    if (rawItems.length === 0) {
+      return { status: "contacts_update_empty" };
+    }
+
+    let updated = 0;
+
+    for (const item of rawItems) {
+      const remoteJid =
+        (typeof item?.remoteJid === "string" && item.remoteJid.trim()) ||
+        (typeof item?.id === "string" && item.id.trim()) ||
+        (typeof item?.jid === "string" && item.jid.trim()) ||
+        null;
+
+      if (!remoteJid) continue;
+
+      const profilePicUrl =
+        (typeof item?.profilePicUrl === "string" && item.profilePicUrl.trim()) ||
+        (typeof item?.profilePictureUrl === "string" &&
+          item.profilePictureUrl.trim()) ||
+        (typeof item?.imgUrl === "string" && item.imgUrl.trim()) ||
+        (typeof item?.picture === "string" && item.picture.trim()) ||
+        null;
+
+      if (!profilePicUrl) continue;
+
+      const isGroup = remoteJid.includes("@g.us");
+      const contactPhone = isGroup
+        ? remoteJid
+        : remoteJid
+            .replace("@s.whatsapp.net", "")
+            .replace("@c.us", "")
+            .replace("@lid", "");
+
+      const result = await this.prisma.contact.updateMany({
+        where: { phone: contactPhone },
+        data: { profilePicUrl },
+      });
+
+      if (result.count === 0) {
+        try {
+          await this.prisma.contact.create({
+            data: {
+              phone: contactPhone,
+              name: contactPhone,
+              profilePicUrl,
+            },
+          });
+        } catch {
+          // race: contato criado por outro fluxo
+        }
+      }
+
+      const contact = await this.prisma.contact.findFirst({
+        where: { phone: contactPhone },
+      });
+
+      this.websocketGateway.emitConversationDisplayNameUpdated({
+        contactPhone,
+        contactName: contact?.name || contactPhone,
+        customTitle: contact?.customTitle,
+        isPinned: contact?.isPinned,
+        profilePicUrl,
+      });
+
+      updated += 1;
+    }
+
+    return { status: "contacts_update_processed", updated };
   }
 
   /**

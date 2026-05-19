@@ -124,6 +124,7 @@ export class ConversationsService {
         name: true,
         isNameManual: true,
         isPinned: true,
+        profilePicUrl: true,
       },
     });
 
@@ -156,6 +157,7 @@ export class ConversationsService {
         name: true,
         isNameManual: true,
         isPinned: true,
+        profilePicUrl: true,
       },
     });
 
@@ -168,7 +170,15 @@ export class ConversationsService {
 
   private mergeContactIntoConversation<
     T extends { contactPhone: string; contactName: string; isGroup?: boolean },
-  >(conv: T, contact?: { customTitle?: string | null; name?: string; isPinned?: boolean }) {
+  >(
+    conv: T,
+    contact?: {
+      customTitle?: string | null;
+      name?: string;
+      isPinned?: boolean;
+      profilePicUrl?: string | null;
+    },
+  ) {
     const contactCustomTitle = contact?.customTitle?.trim() || null;
     const contactOriginalName = contact?.name?.trim() || null;
     const snapshotName = conv.contactName?.trim() || null;
@@ -187,6 +197,7 @@ export class ConversationsService {
       contactName: displayTitle,
       customTitle: contactCustomTitle,
       isPinned: contact?.isPinned ?? false,
+      profilePicUrl: contact?.profilePicUrl?.trim() || null,
       isGroup,
     };
   }

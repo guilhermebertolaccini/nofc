@@ -81,9 +81,76 @@ export class ContactsService {
   }
 
   async findByPhone(phone: string) {
-    return this.prisma.contact.findFirst({
+    const contact = await this.prisma.contact.findFirst({
       where: { phone },
     });
+
+    if (!contact) return null;
+
+    if (!contact.profilePicUrl?.trim()) {
+      const url = await this.fetchAndPersistProfilePicUrl(phone);
+      if (url) {
+        return { ...contact, profilePicUrl: url };
+      }
+    }
+
+    return contact;
+  }
+
+  /**
+   * Busca foto na Evolution quando ausente no banco e persiste em Contact.
+   */
+  private async fetchAndPersistProfilePicUrl(
+    phone: string,
+    instanceName?: string,
+  ): Promise<string | null> {
+    try {
+      const ctx = instanceName
+        ? await this.resolveEvolutionForInstance(instanceName)
+        : await this.resolveDefaultEvolutionContext();
+
+      if (!ctx) return null;
+
+      const url = await this.evolutionService.fetchProfilePictureUrl(
+        ctx.evolution.evolutionUrl,
+        ctx.evolution.evolutionKey,
+        ctx.apiInstanceName,
+        phone,
+      );
+
+      if (!url) return null;
+
+      await this.prisma.contact.updateMany({
+        where: { phone },
+        data: { profilePicUrl: url },
+      });
+
+      return url;
+    } catch (err: any) {
+      console.warn(
+        `[Contacts] fetchAndPersistProfilePicUrl falhou para ${phone}: ${err?.message}`,
+      );
+      return null;
+    }
+  }
+
+  private async resolveDefaultEvolutionContext() {
+    const line = await this.prisma.linesStock.findFirst({
+      where: { lineStatus: 'connected' },
+      orderBy: { id: 'desc' },
+    });
+
+    if (!line) return null;
+
+    const apiInstanceName = line.phone.startsWith('line_')
+      ? line.phone
+      : `line_${line.phone}`;
+
+    try {
+      return await this.resolveEvolutionForInstance(apiInstanceName);
+    } catch {
+      return null;
+    }
   }
 
   async update(id: number, updateContactDto: UpdateContactDto) {

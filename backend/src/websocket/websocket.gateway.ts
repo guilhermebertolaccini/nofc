@@ -3169,6 +3169,7 @@ export class WebsocketGateway
     contactName: string;
     customTitle?: string | null;
     isPinned?: boolean;
+    profilePicUrl?: string | null;
   }) {
     if (!data?.contactPhone) return;
     const payload = {
@@ -3176,6 +3177,9 @@ export class WebsocketGateway
       contactName: data.contactName,
       customTitle: data.customTitle ?? null,
       ...(data.isPinned !== undefined ? { isPinned: data.isPinned } : {}),
+      ...(data.profilePicUrl !== undefined
+        ? { profilePicUrl: data.profilePicUrl }
+        : {}),
     };
     const room = this.buildConversationRoom(data.contactPhone);
     this.server.to(room).emit("conversation_updated", payload);

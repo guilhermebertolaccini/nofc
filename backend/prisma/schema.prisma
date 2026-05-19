@@ -114,6 +114,7 @@ model Contact {
   isNameManual Boolean   @default(false) // Se true, nome foi definido manualmente pelo admin e não deve ser atualizado automaticamente
   customTitle  String?   // Título personalizado de exibição (Shared Inbox). Prioridade: customTitle > name > "Desconhecido". Ao ser definido, isNameManual também é setado para true.
   isPinned     Boolean   @default(false) // Conversa fixada no topo da sidebar (Shared Inbox — global por contato)
+  profilePicUrl String?  // URL da foto de perfil (Evolution API / webhook contacts.update)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 

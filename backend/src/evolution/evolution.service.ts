@@ -216,4 +216,63 @@ export class EvolutionService {
 
     return null;
   }
+
+  /**
+   * Foto de perfil de contato ou grupo via Evolution API.
+   * POST /chat/fetchProfilePictureUrl/{instance} — nunca lança.
+   */
+  async fetchProfilePictureUrl(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+    jidOrPhone: string,
+  ): Promise<string | null> {
+    const base = evolutionUrl.replace(/\/$/, '');
+    const raw = String(jidOrPhone ?? '').trim();
+    if (!raw) return null;
+
+    const number = raw.includes('@')
+      ? raw
+      : `${raw.replace(/\D/g, '')}@s.whatsapp.net`;
+
+    const TIMEOUT_MS = 5000;
+
+    try {
+      const response = await axios.post(
+        `${base}/chat/fetchProfilePictureUrl/${instanceName}`,
+        { number },
+        {
+          headers: { apikey: evolutionKey },
+          timeout: TIMEOUT_MS,
+        },
+      );
+
+      const data = response.data;
+      const nested =
+        data && typeof data === 'object' && data.data && typeof data.data === 'object'
+          ? data.data
+          : null;
+
+      const url =
+        (typeof data?.profilePictureUrl === 'string' && data.profilePictureUrl.trim()) ||
+        (typeof data?.profilePicUrl === 'string' && data.profilePicUrl.trim()) ||
+        (typeof nested?.profilePictureUrl === 'string' &&
+          nested.profilePictureUrl.trim()) ||
+        (typeof nested?.profilePicUrl === 'string' && nested.profilePicUrl.trim()) ||
+        null;
+
+      return url || null;
+    } catch (error: any) {
+      const reason =
+        error?.code === 'ECONNABORTED' || /timeout/i.test(error?.message)
+          ? `timeout (${TIMEOUT_MS}ms)`
+          : error?.response?.status
+            ? `HTTP ${error.response.status}`
+            : error?.message || 'erro';
+      console.warn(
+        `[Evolution] fetchProfilePictureUrl falhou para ${number}: ${reason}`,
+      );
+      return null;
+    }
+  }
 }

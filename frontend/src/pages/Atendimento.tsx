@@ -38,6 +38,7 @@ import {
   PinOff,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
+import { ContactAvatar } from "@/components/ContactAvatar";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -220,6 +221,7 @@ interface ConversationGroup {
   unreadCount?: number;
   isPinned?: boolean;
   isGroup?: boolean;
+  profilePicUrl?: string | null;
   /** Mensagens do thread; `reactions` é derivado de `reactionsJson` ao carregar. */
   messages: (APIConversation & { reactions?: string[] })[];
   isTabulated?: boolean; // Indica se a conversa foi tabulada
@@ -458,6 +460,7 @@ export default function Atendimento() {
             isGroup:
               newMsg.isGroup ?? newMsg.contactPhone.includes("@g.us"),
             isPinned: newMsg.isPinned ?? false,
+            profilePicUrl: newMsg.profilePicUrl ?? null,
             messages: [newMsg],
             unread: newMsg.sender === "contact" && !isOpen,
             unreadCount:
@@ -579,6 +582,7 @@ export default function Atendimento() {
       contactName?: string;
       customTitle?: string | null;
       isPinned?: boolean;
+      profilePicUrl?: string | null;
     }) => {
       const phone = data?.contactPhone?.trim();
       if (!phone) return;
@@ -589,6 +593,7 @@ export default function Atendimento() {
           : undefined;
       const customTitleProvided = data.customTitle !== undefined;
       const isPinnedProvided = data.isPinned !== undefined;
+      const profilePicProvided = data.profilePicUrl !== undefined;
 
       const patchGroup = (g: ConversationGroup): ConversationGroup => {
         if (g.contactPhone !== phone) return g;
@@ -597,6 +602,9 @@ export default function Atendimento() {
           ...(nextContactName ? { contactName: nextContactName } : {}),
           ...(customTitleProvided ? { customTitle: data.customTitle ?? null } : {}),
           ...(isPinnedProvided ? { isPinned: !!data.isPinned } : {}),
+          ...(profilePicProvided
+            ? { profilePicUrl: data.profilePicUrl ?? null }
+            : {}),
         };
       };
 
@@ -960,6 +968,7 @@ export default function Atendimento() {
           existing.messages.push(withReactions(conv));
           if (conv.isPinned) existing.isPinned = true;
           if (conv.isGroup) existing.isGroup = true;
+          if (conv.profilePicUrl) existing.profilePicUrl = conv.profilePicUrl;
           // Update last message if this one is more recent
           const convTime = new Date(conv.datetime).getTime();
           const existingTime = new Date(existing.lastMessageTime).getTime();
@@ -985,6 +994,7 @@ export default function Atendimento() {
             isPinned: conv.isPinned ?? false,
             isGroup:
               conv.isGroup ?? conv.contactPhone.includes("@g.us"),
+            profilePicUrl: conv.profilePicUrl ?? null,
             unreadCount: 0,
             messages: [withReactions(conv)],
           });
@@ -1043,6 +1053,26 @@ export default function Atendimento() {
         ),
       ),
     );
+
+    if (!conv.profilePicUrl) {
+      contactsService
+        .getByPhone(conv.contactPhone)
+        .then((contact) => {
+          const pic = contact?.profilePicUrl?.trim();
+          if (!pic) return;
+          const patch = (g: ConversationGroup): ConversationGroup =>
+            g.contactPhone === conv.contactPhone
+              ? { ...g, profilePicUrl: pic }
+              : g;
+          setConversations((prev) => sortConversationGroups(prev.map(patch)));
+          setSelectedConversation((prev) =>
+            prev?.contactPhone === conv.contactPhone
+              ? { ...prev, profilePicUrl: pic }
+              : prev,
+          );
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const handleTogglePin = useCallback(async () => {
@@ -2591,15 +2621,12 @@ export default function Atendimento() {
                     )}
                   >
                     <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex items-center justify-center flex-shrink-0">
-                        <span className="text-sm font-medium text-primary-foreground">
-                          {getDisplayTitle(conv.customTitle, conv.contactName)
-                            .split(" ")
-                            .map((n) => n[0])
-                            .join("")
-                            .slice(0, 2)}
-                        </span>
-                      </div>
+                      <ContactAvatar
+                        profilePicUrl={conv.profilePicUrl}
+                        contactName={conv.contactName}
+                        customTitle={conv.customTitle}
+                        isGroup={conv.isGroup}
+                      />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1">
                           <p className="font-medium text-sm text-foreground truncate">
@@ -2703,18 +2730,12 @@ export default function Atendimento() {
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex-shrink-0 flex items-center justify-center">
-                    <span className="text-sm font-medium text-primary-foreground">
-                      {getDisplayTitle(
-                        selectedConversation.customTitle,
-                        selectedConversation.contactName,
-                      )
-                        .split(" ")
-                        .map((n) => n[0])
-                        .join("")
-                        .slice(0, 2)}
-                    </span>
-                  </div>
+                  <ContactAvatar
+                    profilePicUrl={selectedConversation.profilePicUrl}
+                    contactName={selectedConversation.contactName}
+                    customTitle={selectedConversation.customTitle}
+                    isGroup={selectedConversation.isGroup}
+                  />
                   <div className="min-w-0 flex-1">
                     <p className="font-medium text-foreground truncate">
                       {getDisplayTitle(

@@ -456,6 +456,7 @@ export interface Contact {
   /** Título personalizado (Shared Inbox). Prioridade > name. */
   customTitle?: string | null;
   isPinned?: boolean;
+  profilePicUrl?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -665,8 +666,8 @@ export interface Conversation {
   customTitle?: string | null;
   /** Contato/grupo fixado no topo da sidebar */
   isPinned?: boolean;
-  /** Derivado do contactPhone (@g.us) ou flag da mensagem */
-  isGroup?: boolean;
+  /** URL da foto de perfil (Evolution API) */
+  profilePicUrl?: string | null;
   createdAt: string;
   /** Apagamento lógico (painel / REVOKE no WhatsApp) */
   isDeleted?: boolean;
