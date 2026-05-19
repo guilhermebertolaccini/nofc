@@ -28,7 +28,8 @@ import {
   Download,
   Paperclip,
   MoreVertical,
-  Lock,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { MainLayout } from "@/components/layout/MainLayout";
@@ -302,6 +303,9 @@ export default function Atendimento() {
   type FilterType = "todas" | "stand-by" | "atendimento" | "finalizadas";
   const [conversationFilter, setConversationFilter] =
     useState<FilterType>("atendimento");
+
+  /** Modo foco no desktop: recolhe a lista lateral para dar mais espaço ao chat. */
+  const [isDesktopSidebarOpen, setIsDesktopSidebarOpen] = useState(true);
 
   // Estado para pesquisa de tabulação
   const [tabulationSearch, setTabulationSearch] = useState("");
@@ -2140,8 +2144,8 @@ export default function Atendimento() {
           - Mobile (< md): coluna única em h-full. A lista de conversas e
             o chat ocupam o espaço inteiro, alternando via classes
             `hidden md:flex` controladas por `selectedConversation`.
-          - Desktop (md+): 2 colunas lado a lado (lista 320px + chat fluido),
-            comportamento histórico preservado.
+          - Desktop (md+): 2 colunas lado a lado (lista 320px + chat fluido).
+            A lista pode ser recolhida via "Modo foco" (`isDesktopSidebarOpen`).
         `h-full` herda a altura do `<main>` do MainLayout, que já garante
         `h-[100dvh]` no container externo — fim do bug do teclado sumindo
         atrás do chat.
@@ -2153,6 +2157,8 @@ export default function Atendimento() {
             "flex-col w-full md:w-80 md:flex-shrink-0 min-h-0",
             // Mobile XOR: esconder a lista quando uma conversa estiver aberta
             selectedConversation ? "hidden md:flex" : "flex",
+            // Desktop: modo foco recolhe a sidebar lateral
+            !isDesktopSidebarOpen && "md:hidden",
           )}
           padding="none"
         >
@@ -2574,6 +2580,36 @@ export default function Atendimento() {
                   >
                     <ArrowLeft className="h-5 w-5" />
                   </Button>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-9 hidden md:flex flex-shrink-0"
+                          onClick={() =>
+                            setIsDesktopSidebarOpen((prev) => !prev)
+                          }
+                          aria-label={
+                            isDesktopSidebarOpen
+                              ? "Recolher lista de conversas"
+                              : "Mostrar lista de conversas"
+                          }
+                        >
+                          {isDesktopSidebarOpen ? (
+                            <PanelLeftClose className="h-5 w-5" />
+                          ) : (
+                            <PanelLeftOpen className="h-5 w-5" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {isDesktopSidebarOpen
+                          ? "Modo foco: recolher conversas"
+                          : "Mostrar lista de conversas"}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                   <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-cyan flex-shrink-0 flex items-center justify-center">
                     <span className="text-sm font-medium text-primary-foreground">
                       {getDisplayTitle(
