@@ -97,7 +97,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAuth } from "@/contexts/AuthContext";
-import { renderTextWithLinks } from "@/utils/textUtils";
+import { renderTextWithLinks, normalizeBrazilPhoneDigits } from "@/utils/textUtils";
 
 /**
  * Resolve qualquer `mediaUrl` para uma URL utilizável pelo navegador.
@@ -977,6 +977,94 @@ export default function Atendimento() {
       setIsLoading(false);
     }
   }, [conversationFilter]); // Adicionar conversationFilter como dependência
+
+  const phonesMatch = useCallback((a: string, b: string) => {
+    const da = a.replace(/\D/g, "");
+    const db = b.replace(/\D/g, "");
+    return da === db || a === b;
+  }, []);
+
+  /** Abre chat 1x1 ao clicar em telefone dentro de uma mensagem. */
+  const handlePhoneClick = useCallback(
+    async (rawPhone: string) => {
+      const phone = normalizeBrazilPhoneDigits(rawPhone);
+      if (!phone || phone.length < 12) {
+        toast({
+          title: "Número inválido",
+          description: "Não foi possível reconhecer o telefone.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const existing = conversations.find(
+        (c) =>
+          !c.contactPhone.includes("@g.us") &&
+          phonesMatch(c.contactPhone, phone),
+      );
+
+      if (existing) {
+        setConversationFilter("todas");
+        setSelectedConversation(existing);
+        return;
+      }
+
+      try {
+        const messages = await conversationsService.getByContact(phone);
+        if (messages?.length) {
+          const sorted = [...messages]
+            .sort(
+              (a, b) =>
+                new Date(a.datetime).getTime() - new Date(b.datetime).getTime(),
+            )
+            .map(withReactions);
+          const last = sorted[sorted.length - 1];
+          const isTabulated =
+            last.tabulation !== null && last.tabulation !== undefined;
+          const group: ConversationGroup = {
+            contactPhone: phone,
+            contactName: last.contactName || phone,
+            customTitle: last.customTitle ?? null,
+            lastMessage: last.message,
+            lastMessageTime: last.datetime,
+            isFromContact: last.sender === "contact",
+            isTabulated,
+            messages: sorted,
+          };
+
+          setConversations((prev) => {
+            const idx = prev.findIndex((c) =>
+              phonesMatch(c.contactPhone, phone),
+            );
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = group;
+              return next.sort(
+                (a, b) =>
+                  new Date(b.lastMessageTime).getTime() -
+                  new Date(a.lastMessageTime).getTime(),
+              );
+            }
+            return [group, ...prev].sort(
+              (a, b) =>
+                new Date(b.lastMessageTime).getTime() -
+                new Date(a.lastMessageTime).getTime(),
+            );
+          });
+          setConversationFilter("todas");
+          setSelectedConversation(group);
+          return;
+        }
+      } catch (error) {
+        console.warn("[Atendimento] Falha ao buscar contato por telefone:", error);
+      }
+
+      setNewContactPhone(phone);
+      setNewContactName("");
+      setIsNewConversationOpen(true);
+    },
+    [conversations, phonesMatch],
+  );
 
   // Subscribe to line reallocation (depois de loadConversations estar definido)
   useRealtimeSubscription(
@@ -2886,6 +2974,8 @@ export default function Atendimento() {
                           <div className="rounded-full border border-border/60 bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
                             {renderTextWithLinks(
                               item.msg.message?.trim() || "Reação",
+                              handlePhoneClick,
+                              item.msg.sender === "operator",
                             )}
                           </div>
                         </div>
@@ -3080,6 +3170,8 @@ export default function Atendimento() {
                                         <p className="text-sm mt-2">
                                           {renderTextWithLinks(
                                             item.msg.message,
+                                            handlePhoneClick,
+                                            item.msg.sender === "operator",
                                           )}
                                         </p>
                                       )}
@@ -3150,6 +3242,8 @@ export default function Atendimento() {
                                         <p className="text-sm mt-2">
                                           {renderTextWithLinks(
                                             item.msg.message,
+                                            handlePhoneClick,
+                                            item.msg.sender === "operator",
                                           )}
                                         </p>
                                       )}
@@ -3183,7 +3277,11 @@ export default function Atendimento() {
                                     ) : (
                                       <span className="flex items-center gap-2 text-sm break-all opacity-80">
                                         <File className="h-4 w-4 flex-shrink-0" aria-hidden />
-                                        {renderTextWithLinks(docLabel)}
+                                        {renderTextWithLinks(
+                                          docLabel,
+                                          handlePhoneClick,
+                                          item.msg.sender === "operator",
+                                        )}
                                       </span>
                                     )}
                                   </div>
@@ -3197,7 +3295,11 @@ export default function Atendimento() {
                               if (!fallbackText.trim()) return null;
                               return (
                                 <p className="text-sm">
-                                  {renderTextWithLinks(fallbackText)}
+                                  {renderTextWithLinks(
+                                    fallbackText,
+                                    handlePhoneClick,
+                                    item.msg.sender === "operator",
+                                  )}
                                 </p>
                               );
                             })()}

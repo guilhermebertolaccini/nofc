@@ -739,7 +739,11 @@ export default function Supervisionar() {
                                 {item.msg.message &&
                                   !item.msg.message.includes("recebida") && (
                                     <p className="text-sm mt-2">
-                                      {renderTextWithLinks(item.msg.message)}
+                                      {renderTextWithLinks(
+                                        item.msg.message,
+                                        undefined,
+                                        item.msg.sender === "operator",
+                                      )}
                                     </p>
                                   )}
                               </div>
@@ -776,7 +780,11 @@ export default function Supervisionar() {
                                 {item.msg.message &&
                                   !item.msg.message.includes("recebido") && (
                                     <p className="text-sm mt-2">
-                                      {renderTextWithLinks(item.msg.message)}
+                                      {renderTextWithLinks(
+                                        item.msg.message,
+                                        undefined,
+                                        item.msg.sender === "operator",
+                                      )}
                                     </p>
                                   )}
                               </div>
@@ -796,6 +804,8 @@ export default function Supervisionar() {
                                   <FileText className="h-4 w-4" />
                                   {renderTextWithLinks(
                                     item.msg.message?.trim() || "Documento",
+                                    undefined,
+                                    item.msg.sender === "operator",
                                   )}
                                 </a>
                               </div>
@@ -805,7 +815,11 @@ export default function Supervisionar() {
                                 if (!t.trim()) return null;
                                 return (
                                   <p className="text-sm">
-                                    {renderTextWithLinks(t)}
+                                    {renderTextWithLinks(
+                                      t,
+                                      undefined,
+                                      item.msg.sender === "operator",
+                                    )}
                                   </p>
                                 );
                               })()
