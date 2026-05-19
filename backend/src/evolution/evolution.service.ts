@@ -279,31 +279,32 @@ export class EvolutionService {
   /**
    * Envia mensagem de voz (PTT) via Evolution API.
    * POST /message/sendWhatsAppAudio/{instance}
-   * `audio` aceita URL pública ou data URI base64 (data:audio/...;base64,...).
+   * `audioUrl` — URL pública acessível pela Evolution (sem base64 local).
    */
   async sendWhatsAppAudio(
     evolutionUrl: string,
     evolutionKey: string,
     instanceName: string,
     number: string,
-    audio: string,
+    audioUrl: string,
   ) {
     const base = evolutionUrl.replace(/\/$/, '');
     const cleanNumber = number.includes('@')
       ? number.trim()
       : number.replace(/\D/g, '');
 
+    const payload = {
+      number: cleanNumber,
+      audio: audioUrl,
+      options: {
+        ptt: true,
+        presence: 'recording',
+      },
+    };
+
     return axios.post(
       `${base}/message/sendWhatsAppAudio/${instanceName}`,
-      {
-        number: cleanNumber,
-        audio,
-        encoding: true,
-        options: {
-          delay: 1200,
-          presence: 'recording',
-        },
-      },
+      payload,
       {
         headers: { apikey: evolutionKey },
         timeout: 60000,

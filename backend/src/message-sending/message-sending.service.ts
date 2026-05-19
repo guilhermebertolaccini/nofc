@@ -86,9 +86,8 @@ export class MessageSendingService {
             {
               number: cleanPhone,
               audio: mediaUrl,
-              encoding: true,
               options: {
-                delay: 1200,
+                ptt: true,
                 presence: 'recording',
               },
             },

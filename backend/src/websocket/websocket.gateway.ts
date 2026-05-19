@@ -111,38 +111,37 @@ export class WebsocketGateway
     return messageType || "text";
   }
 
-  private async resolveAudioForEvolution(mediaUrl: string): Promise<string> {
+  private resolvePublicAudioUrl(mediaUrl: string): string {
     if (!mediaUrl?.trim()) {
       throw new BadRequestException('URL de áudio ausente para envio');
     }
 
-    if (mediaUrl.startsWith('data:')) {
-      return mediaUrl.trim();
-    }
+    const trimmed = mediaUrl.trim();
 
-    if (mediaUrl.includes('/media/') || mediaUrl.startsWith('/media/')) {
-      const { dataUri } =
-        await this.mediaService.readUploadedMediaAsDataUri(mediaUrl);
-      if (!dataUri?.trim()) {
-        throw new BadRequestException(
-          'Falha ao converter áudio local para base64',
-        );
-      }
-      return dataUri;
-    }
-
-    if (mediaUrl.startsWith('http')) {
-      return mediaUrl.trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
     }
 
     const appUrl =
       process.env.APP_URL || 'https://api.taticamarketing.com.br';
-    return `${appUrl}${mediaUrl.startsWith('/') ? mediaUrl : `/${mediaUrl}`}`;
+    return `${appUrl}${trimmed.startsWith('/') ? trimmed : `/${trimmed}`}`;
+  }
+
+  private extractErrorMessage(error: any): string {
+    const data = error?.response?.data;
+    if (typeof data?.message === 'string') return data.message;
+    if (Array.isArray(data?.message)) return data.message.join(' ');
+    if (typeof data?.response?.message === 'string') return data.response.message;
+    if (Array.isArray(data?.response?.message)) {
+      return data.response.message.join(' ');
+    }
+    return String(error?.message || '');
   }
 
   private getHttpErrorStatus(error: any): number | undefined {
     return (
       error?.response?.status ??
+      error?.response?.data?.statusCode ??
       error?.status ??
       (typeof error?.getStatus === 'function' ? error.getStatus() : undefined)
     );
@@ -150,7 +149,15 @@ export class WebsocketGateway
 
   private isNonRetriableClientError(error: any): boolean {
     const status = this.getHttpErrorStatus(error);
-    return status === 400;
+    if (status === 400) return true;
+
+    const msg = this.extractErrorMessage(error).toLowerCase();
+    return (
+      msg.includes('owned media must be') ||
+      msg.includes('payload inválido') ||
+      msg.includes('arquivo de áudio') ||
+      msg.includes('bad request')
+    );
   }
 
   /**
@@ -1318,12 +1325,14 @@ export class WebsocketGateway
             lastError = error;
 
             const errorStatus = this.getHttpErrorStatus(error);
-            const errorMessage =
-              error.response?.data?.message || error.message;
+            const errorMessage = this.extractErrorMessage(error);
 
-            if (this.isNonRetriableClientError(error)) {
+            if (
+              error?.response?.status === 400 ||
+              this.isNonRetriableClientError(error)
+            ) {
               console.warn(
-                `⛔ [WebSocket] Erro ${errorStatus} (payload inválido). Abortando retries — linha ${currentLineId} protegida de banimento.`,
+                `⛔ [WebSocket] Erro 400/payload inválido. Abortando retries — linha ${currentLineId} protegida.`,
                 errorMessage,
               );
               throw error;
@@ -1496,10 +1505,12 @@ export class WebsocketGateway
                 }
               }
             } else {
-              // Se não deve realocar (erro pode ser com número/mensagem), não fazer nada
+              // Se não deve realocar (erro pode ser com número/mensagem), encerrar imediatamente
               console.warn(
-                `⚠️ [WebSocket] Erro não relacionado à linha. Não será feita realocação.`,
+                `⛔ [WebSocket] Erro ${errorStatus} não exige troca de linha. Encerrando retries.`,
+                errorMessage,
               );
+              throw error;
             }
 
             // Exhaustion Ban (Se falhou tudo, BANIR TODAS AS LINHAS TENTADAS)
@@ -1896,18 +1907,10 @@ export class WebsocketGateway
           : data.contactPhone.replace(/\D/g, "");
 
         apiResponse = await tryReallocateAndResend(async () => {
-          const audioPayload = await this.resolveAudioForEvolution(
-            data.mediaUrl!,
-          );
-
-          if (!audioPayload?.trim()) {
-            throw new BadRequestException(
-              'Áudio inválido: payload vazio após leitura do arquivo',
-            );
-          }
+          const audioUrl = this.resolvePublicAudioUrl(data.mediaUrl!);
 
           console.log(
-            `🎤 [WebSocket] Enviando mensagem de voz (PTT) para ${isGroup ? "grupo" : "contato"} ${targetNumber} (${Math.round(audioPayload.length / 1024)} KB)`,
+            `🎤 [WebSocket] Enviando mensagem de voz (PTT) via URL pública para ${isGroup ? "grupo" : "contato"} ${targetNumber}: ${audioUrl}`,
           );
 
           return this.evolutionService.sendWhatsAppAudio(
@@ -1915,7 +1918,7 @@ export class WebsocketGateway
             evolution.evolutionKey,
             instanceName,
             targetNumber,
-            audioPayload,
+            audioUrl,
           );
         });
 
@@ -2442,15 +2445,13 @@ export class WebsocketGateway
             const targetNumber = data.contactPhone.includes("@g.us")
               ? data.contactPhone
               : data.contactPhone.replace(/\D/g, "");
-            const audioPayload = await this.resolveAudioForEvolution(
-              data.mediaUrl,
-            );
+            const audioUrl = this.resolvePublicAudioUrl(data.mediaUrl);
             apiResponse = await this.evolutionService.sendWhatsAppAudio(
               evolution.evolutionUrl,
               evolution.evolutionKey,
               instanceName,
               targetNumber,
-              audioPayload,
+              audioUrl,
             );
           } else {
             // Texto simples
