@@ -3168,12 +3168,14 @@ export class WebsocketGateway
     contactPhone: string;
     contactName: string;
     customTitle?: string | null;
+    isPinned?: boolean;
   }) {
     if (!data?.contactPhone) return;
     const payload = {
       contactPhone: data.contactPhone,
       contactName: data.contactName,
       customTitle: data.customTitle ?? null,
+      ...(data.isPinned !== undefined ? { isPinned: data.isPinned } : {}),
     };
     const room = this.buildConversationRoom(data.contactPhone);
     this.server.to(room).emit("conversation_updated", payload);

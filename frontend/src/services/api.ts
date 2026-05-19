@@ -455,6 +455,7 @@ export interface Contact {
   isNameManual?: boolean;
   /** Título personalizado (Shared Inbox). Prioridade > name. */
   customTitle?: string | null;
+  isPinned?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -534,6 +535,13 @@ export const contactsService = {
         method: 'PATCH',
         body: JSON.stringify({ customTitle }),
       }
+    );
+  },
+
+  togglePin: async (phone: string): Promise<Contact> => {
+    return apiRequest<Contact>(
+      `/contacts/toggle-pin/${encodeURIComponent(phone)}`,
+      { method: 'PATCH' },
     );
   },
 
@@ -655,6 +663,10 @@ export interface Conversation {
   participantName?: string | null;
   /** Título customizado herdado do Contact (cache opcional) */
   customTitle?: string | null;
+  /** Contato/grupo fixado no topo da sidebar */
+  isPinned?: boolean;
+  /** Derivado do contactPhone (@g.us) ou flag da mensagem */
+  isGroup?: boolean;
   createdAt: string;
   /** Apagamento lógico (painel / REVOKE no WhatsApp) */
   isDeleted?: boolean;

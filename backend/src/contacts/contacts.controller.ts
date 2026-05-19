@@ -94,6 +94,16 @@ export class ContactsController {
     return this.contactsService.rename(phone, dto);
   }
 
+  /**
+   * PATCH /contacts/toggle-pin/:phone
+   * Fixa ou desfixa conversa no topo da sidebar (Shared Inbox).
+   */
+  @Patch("toggle-pin/:phone")
+  @Roles(Role.admin, Role.supervisor, Role.operator, Role.digital)
+  togglePin(@Param("phone") phone: string) {
+    return this.contactsService.togglePinByPhone(phone);
+  }
+
   @Patch(":id")
   @Roles(Role.admin, Role.supervisor, Role.operator, Role.digital)
   update(@Param("id") id: string, @Body() updateContactDto: UpdateContactDto) {

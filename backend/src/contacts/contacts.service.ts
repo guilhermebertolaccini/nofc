@@ -195,6 +195,38 @@ export class ContactsService {
   }
 
   /**
+   * Alterna fixação da conversa no topo da sidebar (Shared Inbox — global por contato).
+   */
+  async togglePinByPhone(phone: string) {
+    const existing = await this.prisma.contact.findFirst({ where: { phone } });
+
+    const contact = existing
+      ? await this.prisma.contact.update({
+          where: { id: existing.id },
+          data: { isPinned: !existing.isPinned },
+        })
+      : await this.prisma.contact.create({
+          data: {
+            phone,
+            name: phone,
+            isPinned: true,
+          },
+        });
+
+    this.websocketGateway.emitConversationDisplayNameUpdated({
+      contactPhone: phone,
+      contactName: contact.name,
+      customTitle: contact.customTitle,
+      isPinned: contact.isPinned,
+    });
+
+    return {
+      ...contact,
+      displayTitle: resolveDisplayTitle(contact.customTitle, contact.name),
+    };
+  }
+
+  /**
    * Sincroniza em lote nomes reais de grupos antigos via Evolution API.
    * Alvo: contatos @g.us cujo name ainda é JID genérico ou "Grupo …".
    */

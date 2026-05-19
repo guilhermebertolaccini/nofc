@@ -123,32 +123,72 @@ export class ConversationsService {
         customTitle: true,
         name: true,
         isNameManual: true,
+        isPinned: true,
       },
     });
 
     const contactsByPhone = new Map(contacts.map((c) => [c.phone, c]));
 
-    return conversations.map((conv) => {
-      const contact = contactsByPhone.get(conv.contactPhone);
+    return conversations.map((conv) =>
+      this.mergeContactIntoConversation(conv, contactsByPhone.get(conv.contactPhone)),
+    );
+  }
 
-      const contactCustomTitle = contact?.customTitle?.trim() || null;
-      const contactOriginalName = contact?.name?.trim() || null;
-      const snapshotName = conv.contactName?.trim() || null;
+  /** Enriquece mensagens com dados do Contact (nome, pin, grupo). */
+  private async enrichConversationsWithContact<T extends { contactPhone: string; contactName: string; isGroup?: boolean }>(
+    conversations: T[],
+  ) {
+    if (conversations.length === 0) return [];
 
-      const displayTitle =
-        contactCustomTitle ||
-        contactOriginalName ||
-        snapshotName ||
-        "Desconhecido";
+    const uniquePhones = Array.from(
+      new Set(
+        conversations
+          .map((c) => c.contactPhone)
+          .filter((p): p is string => !!p),
+      ),
+    );
 
-      // Sobrescreve contactName com o título resolvido e expõe customTitle
-      // na raiz. Nenhum objeto relacional é vazado no payload REST.
-      return {
-        ...conv,
-        contactName: displayTitle,
-        customTitle: contactCustomTitle,
-      };
+    const contacts = await this.prisma.contact.findMany({
+      where: { phone: { in: uniquePhones } },
+      select: {
+        phone: true,
+        customTitle: true,
+        name: true,
+        isNameManual: true,
+        isPinned: true,
+      },
     });
+
+    const contactsByPhone = new Map(contacts.map((c) => [c.phone, c]));
+
+    return conversations.map((conv) =>
+      this.mergeContactIntoConversation(conv, contactsByPhone.get(conv.contactPhone)),
+    );
+  }
+
+  private mergeContactIntoConversation<
+    T extends { contactPhone: string; contactName: string; isGroup?: boolean },
+  >(conv: T, contact?: { customTitle?: string | null; name?: string; isPinned?: boolean }) {
+    const contactCustomTitle = contact?.customTitle?.trim() || null;
+    const contactOriginalName = contact?.name?.trim() || null;
+    const snapshotName = conv.contactName?.trim() || null;
+
+    const displayTitle =
+      contactCustomTitle ||
+      contactOriginalName ||
+      snapshotName ||
+      "Desconhecido";
+
+    const isGroup =
+      conv.isGroup === true || conv.contactPhone.includes("@g.us");
+
+    return {
+      ...conv,
+      contactName: displayTitle,
+      customTitle: contactCustomTitle,
+      isPinned: contact?.isPinned ?? false,
+      isGroup,
+    };
   }
 
   async findByContactPhone(
@@ -229,7 +269,7 @@ export class ConversationsService {
       // SEM take/limit - carregar todo o histórico
     });
 
-    return conversations;
+    return this.enrichConversationsWithContact(conversations);
   }
 
   /**
@@ -268,7 +308,7 @@ export class ConversationsService {
       },
     });
 
-    return conversations;
+    return this.enrichConversationsWithContact(conversations);
   }
 
   /**

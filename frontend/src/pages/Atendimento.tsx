@@ -34,6 +34,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Lock as LockIcon,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { MainLayout } from "@/components/layout/MainLayout";
@@ -215,9 +217,45 @@ interface ConversationGroup {
   lastMessageTime: string;
   isFromContact: boolean;
   unread?: boolean;
+  unreadCount?: number;
+  isPinned?: boolean;
+  isGroup?: boolean;
   /** Mensagens do thread; `reactions` é derivado de `reactionsJson` ao carregar. */
   messages: (APIConversation & { reactions?: string[] })[];
   isTabulated?: boolean; // Indica se a conversa foi tabulada
+}
+
+type SidebarFilterType = "all" | "unread" | "favorites" | "groups";
+
+function sortConversationGroups(
+  groups: ConversationGroup[],
+): ConversationGroup[] {
+  return [...groups].sort((a, b) => {
+    const aPinned = !!a.isPinned;
+    const bPinned = !!b.isPinned;
+    if (aPinned !== bPinned) return aPinned ? -1 : 1;
+    return (
+      new Date(b.lastMessageTime).getTime() -
+      new Date(a.lastMessageTime).getTime()
+    );
+  });
+}
+
+function filterConversationGroups(
+  groups: ConversationGroup[],
+  filter: SidebarFilterType,
+): ConversationGroup[] {
+  switch (filter) {
+    case "unread":
+      return groups.filter((g) => (g.unreadCount ?? 0) > 0);
+    case "favorites":
+      return groups.filter((g) => !!g.isPinned);
+    case "groups":
+      return groups.filter((g) => !!g.isGroup);
+    case "all":
+    default:
+      return groups;
+  }
 }
 
 /** Mensagem enriquecida com reações parseadas do banco (`reactionsJson`). */
@@ -303,10 +341,10 @@ export default function Atendimento() {
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
 
-  // Estado para filtro de conversas
-  type FilterType = "todas" | "stand-by" | "atendimento" | "finalizadas";
+  // Estado para filtro da sidebar (modelo WhatsApp)
   const [conversationFilter, setConversationFilter] =
-    useState<FilterType>("atendimento");
+    useState<SidebarFilterType>("all");
+  const [isPinToggling, setIsPinToggling] = useState(false);
 
   /** Modo foco no desktop: recolhe a lista lateral para dar mais espaço ao chat. */
   const [isDesktopSidebarOpen, setIsDesktopSidebarOpen] = useState(true);
@@ -370,18 +408,23 @@ export default function Atendimento() {
           const existing = prev.find(
             (c) => c.contactPhone === newMsg.contactPhone,
           );
+          const isOpen =
+            selectedPhoneRef.current === newMsg.contactPhone;
 
           if (existing) {
-            // Já existe a conversa: append da mensagem com guard por id.
             const updated = prev.map((conv) => {
               if (conv.contactPhone === newMsg.contactPhone) {
-                // ⛔ DEDUPE: se já existe mensagem com o mesmo id, não reinserir.
                 if (
                   newMsg.id != null &&
                   conv.messages.some((m) => m.id === newMsg.id)
                 ) {
                   return conv;
                 }
+                const fromContact = newMsg.sender === "contact";
+                const nextUnread =
+                  fromContact && !isOpen
+                    ? (conv.unreadCount ?? 0) + 1
+                    : conv.unreadCount ?? 0;
                 return {
                   ...conv,
                   messages: [...conv.messages, newMsg].sort(
@@ -391,29 +434,36 @@ export default function Atendimento() {
                   ),
                   lastMessage: newMsg.message,
                   lastMessageTime: newMsg.datetime,
-                  isFromContact: newMsg.sender === "contact",
+                  isFromContact: fromContact,
+                  isGroup:
+                    conv.isGroup ??
+                    newMsg.isGroup ??
+                    newMsg.contactPhone.includes("@g.us"),
+                  unread: nextUnread > 0,
+                  unreadCount: nextUnread,
                 };
               }
               return conv;
             });
-            return updated.sort(
-              (a, b) =>
-                new Date(b.lastMessageTime).getTime() -
-                new Date(a.lastMessageTime).getTime(),
-            );
-          } else {
-            // Create new conversation group
-            const newGroup: ConversationGroup = {
-              contactPhone: newMsg.contactPhone,
-              contactName: newMsg.contactName,
-              lastMessage: newMsg.message,
-              lastMessageTime: newMsg.datetime,
-              isFromContact: newMsg.sender === "contact",
-              messages: [newMsg],
-              unread: true,
-            };
-            return [newGroup, ...prev];
+            return sortConversationGroups(updated);
           }
+
+          const newGroup: ConversationGroup = {
+            contactPhone: newMsg.contactPhone,
+            contactName: newMsg.contactName,
+            customTitle: newMsg.customTitle ?? null,
+            lastMessage: newMsg.message,
+            lastMessageTime: newMsg.datetime,
+            isFromContact: newMsg.sender === "contact",
+            isGroup:
+              newMsg.isGroup ?? newMsg.contactPhone.includes("@g.us"),
+            isPinned: newMsg.isPinned ?? false,
+            messages: [newMsg],
+            unread: newMsg.sender === "contact" && !isOpen,
+            unreadCount:
+              newMsg.sender === "contact" && !isOpen ? 1 : 0,
+          };
+          return sortConversationGroups([newGroup, ...prev]);
         });
 
         // ⛡ Guard de roteamento: só inserir a newMsg no chat ABERTO
@@ -528,6 +578,7 @@ export default function Atendimento() {
       contactPhone?: string;
       contactName?: string;
       customTitle?: string | null;
+      isPinned?: boolean;
     }) => {
       const phone = data?.contactPhone?.trim();
       if (!phone) return;
@@ -537,6 +588,7 @@ export default function Atendimento() {
           ? data.contactName.trim()
           : undefined;
       const customTitleProvided = data.customTitle !== undefined;
+      const isPinnedProvided = data.isPinned !== undefined;
 
       const patchGroup = (g: ConversationGroup): ConversationGroup => {
         if (g.contactPhone !== phone) return g;
@@ -544,10 +596,11 @@ export default function Atendimento() {
           ...g,
           ...(nextContactName ? { contactName: nextContactName } : {}),
           ...(customTitleProvided ? { customTitle: data.customTitle ?? null } : {}),
+          ...(isPinnedProvided ? { isPinned: !!data.isPinned } : {}),
         };
       };
 
-      setConversations((prev) => prev.map(patchGroup));
+      setConversations((prev) => sortConversationGroups(prev.map(patchGroup)));
       setSelectedConversation((prev) => (prev ? patchGroup(prev) : prev));
     },
     [],
@@ -876,6 +929,14 @@ export default function Atendimento() {
     return `${names[0]} e mais ${names.length - 1} estão digitando...`;
   }, [typingUsers]);
 
+  const displayedConversations = useMemo(
+    () =>
+      sortConversationGroups(
+        filterConversationGroups(conversations, conversationFilter),
+      ),
+    [conversations, conversationFilter],
+  );
+
   const loadConversations = useCallback(async () => {
     try {
       // Carregar tanto conversas ativas quanto tabuladas para ter todos os dados
@@ -897,6 +958,8 @@ export default function Atendimento() {
 
         if (existing) {
           existing.messages.push(withReactions(conv));
+          if (conv.isPinned) existing.isPinned = true;
+          if (conv.isGroup) existing.isGroup = true;
           // Update last message if this one is more recent
           const convTime = new Date(conv.datetime).getTime();
           const existingTime = new Date(existing.lastMessageTime).getTime();
@@ -919,53 +982,26 @@ export default function Atendimento() {
             lastMessageTime: conv.datetime,
             isFromContact: conv.sender === "contact",
             isTabulated: isTabulated,
+            isPinned: conv.isPinned ?? false,
+            isGroup:
+              conv.isGroup ?? conv.contactPhone.includes("@g.us"),
+            unreadCount: 0,
             messages: [withReactions(conv)],
           });
         }
       });
 
-      // Sort messages within each group and groups by last message time
-      let groups = Array.from(groupedMap.values())
-        .map((group) => ({
+      const groups = sortConversationGroups(
+        Array.from(groupedMap.values()).map((group) => ({
           ...group,
-          messages: group.messages.sort(
-            (a, b) =>
-              new Date(a.datetime).getTime() - new Date(b.datetime).getTime(),
-          ).map(withReactions),
-        }))
-        .sort(
-          (a, b) =>
-            new Date(b.lastMessageTime).getTime() -
-            new Date(a.lastMessageTime).getTime(),
-        );
-
-      // Aplicar filtro com regras de 6 horas
-      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
-
-      if (conversationFilter !== "todas") {
-        groups = groups.filter((group) => {
-          const lastMsgTime = new Date(group.lastMessageTime);
-
-          if (conversationFilter === "finalizadas") {
-            // Finalizadas: apenas tabuladas nas últimas 6 horas
-            return group.isTabulated === true && lastMsgTime >= sixHoursAgo;
-          }
-          // Para stand-by e atendimento, só mostrar não tabuladas
-          if (group.isTabulated === true) {
-            return false;
-          }
-          if (conversationFilter === "stand-by") {
-            // Stand By: SEM resposta do cliente há mais de 6 horas
-            return group.isFromContact === false && lastMsgTime < sixHoursAgo;
-          }
-          if (conversationFilter === "atendimento") {
-            // Atendimento: TODAS as conversas ativas que não estão em stand-by
-            // Mostra se: cliente respondeu OU operador enviou há menos de 6h
-            return group.isFromContact === true || lastMsgTime >= sixHoursAgo;
-          }
-          return true;
-        });
-      }
+          messages: group.messages
+            .sort(
+              (a, b) =>
+                new Date(a.datetime).getTime() - new Date(b.datetime).getTime(),
+            )
+            .map(withReactions),
+        })),
+      );
 
       setConversations(groups);
 
@@ -984,13 +1020,71 @@ export default function Atendimento() {
     } finally {
       setIsLoading(false);
     }
-  }, [conversationFilter]); // Adicionar conversationFilter como dependência
+  }, []); // Filtro aplicado via displayedConversations (useMemo)
 
   const phonesMatch = useCallback((a: string, b: string) => {
     const da = a.replace(/\D/g, "");
     const db = b.replace(/\D/g, "");
     return da === db || a === b;
   }, []);
+
+  const handleSelectConversation = useCallback((conv: ConversationGroup) => {
+    setSelectedConversation({
+      ...conv,
+      unread: false,
+      unreadCount: 0,
+    });
+    setConversations((prev) =>
+      sortConversationGroups(
+        prev.map((c) =>
+          c.contactPhone === conv.contactPhone
+            ? { ...c, unread: false, unreadCount: 0 }
+            : c,
+        ),
+      ),
+    );
+  }, []);
+
+  const handleTogglePin = useCallback(async () => {
+    if (!selectedConversation || isPinToggling) return;
+
+    const phone = selectedConversation.contactPhone;
+    const nextPinned = !selectedConversation.isPinned;
+
+    const patch = (g: ConversationGroup): ConversationGroup =>
+      g.contactPhone === phone ? { ...g, isPinned: nextPinned } : g;
+
+    setConversations((prev) => sortConversationGroups(prev.map(patch)));
+    setSelectedConversation((prev) =>
+      prev ? { ...prev, isPinned: nextPinned } : prev,
+    );
+    setIsPinToggling(true);
+
+    try {
+      await contactsService.togglePin(phone);
+      toast({
+        title: nextPinned ? "Conversa fixada" : "Conversa desfixada",
+        description: nextPinned
+          ? "Esta conversa ficará no topo da lista."
+          : "A conversa voltou à ordenação normal.",
+      });
+    } catch (error) {
+      const revert = (g: ConversationGroup): ConversationGroup =>
+        g.contactPhone === phone ? { ...g, isPinned: !nextPinned } : g;
+      setConversations((prev) => sortConversationGroups(prev.map(revert)));
+      setSelectedConversation((prev) =>
+        prev ? { ...prev, isPinned: !nextPinned } : prev,
+      );
+      toast({
+        title: "Erro ao fixar conversa",
+        description:
+          error instanceof Error ? error.message : "Tente novamente.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsPinToggling(false);
+    }
+  }, [selectedConversation, isPinToggling]);
 
   /** Abre chat 1x1 ao clicar em telefone dentro de uma mensagem. */
   const handlePhoneClick = useCallback(
@@ -1012,7 +1106,7 @@ export default function Atendimento() {
       );
 
       if (existing) {
-        setConversationFilter("todas");
+        setConversationFilter("all");
         setSelectedConversation(existing);
         return;
       }
@@ -1037,6 +1131,9 @@ export default function Atendimento() {
             lastMessageTime: last.datetime,
             isFromContact: last.sender === "contact",
             isTabulated,
+            isPinned: last.isPinned ?? false,
+            isGroup: last.isGroup ?? phone.includes("@g.us"),
+            unreadCount: 0,
             messages: sorted,
           };
 
@@ -1047,19 +1144,11 @@ export default function Atendimento() {
             if (idx >= 0) {
               const next = [...prev];
               next[idx] = group;
-              return next.sort(
-                (a, b) =>
-                  new Date(b.lastMessageTime).getTime() -
-                  new Date(a.lastMessageTime).getTime(),
-              );
+              return sortConversationGroups(next);
             }
-            return [group, ...prev].sort(
-              (a, b) =>
-                new Date(b.lastMessageTime).getTime() -
-                new Date(a.lastMessageTime).getTime(),
-            );
+            return sortConversationGroups([group, ...prev]);
           });
-          setConversationFilter("todas");
+          setConversationFilter("all");
           setSelectedConversation(group);
           return;
         }
@@ -2450,42 +2539,30 @@ export default function Atendimento() {
               </Dialog>
             </div>
 
-            {/* Botões de Filtro */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <Button
-                variant={
-                  conversationFilter === "atendimento" ? "default" : "outline"
-                }
-                size="sm"
-                onClick={() => setConversationFilter("atendimento")}
-              >
-                Atendimento
-              </Button>
-              <Button
-                variant={
-                  conversationFilter === "stand-by" ? "default" : "outline"
-                }
-                size="sm"
-                onClick={() => setConversationFilter("stand-by")}
-              >
-                Stand By
-              </Button>
-              <Button
-                variant={
-                  conversationFilter === "finalizadas" ? "default" : "outline"
-                }
-                size="sm"
-                onClick={() => setConversationFilter("finalizadas")}
-              >
-                Finalizadas
-              </Button>
-              <Button
-                variant={conversationFilter === "todas" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setConversationFilter("todas")}
-              >
-                Todas
-              </Button>
+            {/* Filtros estilo WhatsApp Web */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {(
+                [
+                  ["all", "Todas"],
+                  ["unread", "Não lidas"],
+                  ["favorites", "Favoritas"],
+                  ["groups", "Grupos"],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setConversationFilter(key)}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                    conversationFilter === key
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "bg-muted/80 text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -2495,17 +2572,17 @@ export default function Atendimento() {
               <div className="flex items-center justify-center h-48">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
               </div>
-            ) : conversations.length === 0 ? (
+            ) : displayedConversations.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
                 <MessageCircle className="h-12 w-12 mb-2 opacity-50" />
-                <p className="text-sm">Nenhuma conversa ativa</p>
+                <p className="text-sm">Nenhuma conversa neste filtro</p>
               </div>
             ) : (
               <div className="p-2 space-y-1">
-                {conversations.map((conv) => (
+                {displayedConversations.map((conv) => (
                   <button
                     key={conv.contactPhone}
-                    onClick={() => setSelectedConversation(conv)}
+                    onClick={() => handleSelectConversation(conv)}
                     className={cn(
                       "w-full p-3 rounded-xl text-left transition-colors",
                       "hover:bg-primary/5",
@@ -2524,13 +2601,21 @@ export default function Atendimento() {
                         </span>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-1">
                           <p className="font-medium text-sm text-foreground truncate">
                             {getDisplayTitle(conv.customTitle, conv.contactName)}
                           </p>
-                          <span className="text-xs text-muted-foreground">
-                            {formatChatListTime(conv.lastMessageTime)}
-                          </span>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            {conv.isPinned && (
+                              <Pin
+                                className="h-3 w-3 text-muted-foreground rotate-45"
+                                aria-label="Conversa fixada"
+                              />
+                            )}
+                            <span className="text-xs text-muted-foreground">
+                              {formatChatListTime(conv.lastMessageTime)}
+                            </span>
+                          </div>
                         </div>
                         <div className="flex items-center gap-1 mt-0.5">
                           {conv.isFromContact ? (
@@ -2543,8 +2628,12 @@ export default function Atendimento() {
                           </p>
                         </div>
                       </div>
-                      {conv.unread && (
-                        <div className="w-2 h-2 rounded-full bg-primary flex-shrink-0 mt-2" />
+                      {(conv.unreadCount ?? 0) > 0 && (
+                        <div className="min-w-[1.25rem] h-5 px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-semibold flex items-center justify-center flex-shrink-0 mt-1">
+                          {(conv.unreadCount ?? 0) > 99
+                            ? "99+"
+                            : conv.unreadCount}
+                        </div>
                       )}
                     </div>
                   </button>
@@ -2644,6 +2733,37 @@ export default function Atendimento() {
                       )}
                     </div>
                   </div>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={handleTogglePin}
+                          disabled={isPinToggling}
+                          aria-label={
+                            selectedConversation.isPinned
+                              ? "Desfixar conversa"
+                              : "Fixar conversa"
+                          }
+                        >
+                          {isPinToggling ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : selectedConversation.isPinned ? (
+                            <PinOff className="h-4 w-4" />
+                          ) : (
+                            <Pin className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {selectedConversation.isPinned
+                          ? "Desfixar conversa"
+                          : "Fixar conversa no topo"}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
