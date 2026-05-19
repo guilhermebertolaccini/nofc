@@ -4,6 +4,12 @@ import { CreateEvolutionDto } from './dto/create-evolution.dto';
 import { UpdateEvolutionDto } from './dto/update-evolution.dto';
 import axios from 'axios';
 
+export interface GroupMetadataResult {
+  /** Nome exibido do grupo (WhatsApp subject) */
+  subject: string | null;
+  id?: string;
+}
+
 @Injectable()
 export class EvolutionService {
   constructor(private prisma: PrismaService) { }
@@ -142,5 +148,72 @@ export class EvolutionService {
       );
       return null;
     }
+  }
+
+  /**
+   * Metadados de um grupo WhatsApp (subject = nome real do grupo).
+   * Tenta endpoints comuns entre versões da Evolution API.
+   * Nunca lança — retorna `null` em falha/timeout.
+   */
+  async getGroupMetadata(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+    groupJid: string,
+  ): Promise<GroupMetadataResult | null> {
+    const base = evolutionUrl.replace(/\/$/, '');
+    const jid = groupJid.includes('@g.us')
+      ? groupJid.trim()
+      : `${String(groupJid).replace(/\s/g, '')}@g.us`;
+    const TIMEOUT_MS = 5000;
+
+    const paths = [
+      `/group/findGroupInfos/${instanceName}`,
+      `/group/findGroupMetaData/${instanceName}`,
+      `/group/metadata/${instanceName}`,
+    ];
+
+    for (const path of paths) {
+      try {
+        const response = await axios.get(`${base}${path}`, {
+          params: { groupJid: jid },
+          headers: { apikey: evolutionKey },
+          timeout: TIMEOUT_MS,
+        });
+
+        const raw = response.data;
+        const nested =
+          raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object'
+            ? raw.data
+            : null;
+
+        const subject =
+          (typeof raw?.subject === 'string' && raw.subject.trim()) ||
+          (typeof nested?.subject === 'string' && nested.subject.trim()) ||
+          null;
+
+        if (subject) {
+          return {
+            subject,
+            id:
+              (typeof raw?.id === 'string' && raw.id) ||
+              (typeof nested?.id === 'string' && nested.id) ||
+              jid,
+          };
+        }
+      } catch (error: any) {
+        const reason =
+          error?.code === 'ECONNABORTED' || /timeout/i.test(error?.message)
+            ? `timeout (${TIMEOUT_MS}ms)`
+            : error?.response?.status
+              ? `HTTP ${error.response.status}`
+              : error?.message || 'erro';
+        console.warn(
+          `[Evolution] getGroupMetadata ${path} falhou para ${jid}: ${reason}`,
+        );
+      }
+    }
+
+    return null;
   }
 }

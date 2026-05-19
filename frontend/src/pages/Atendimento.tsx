@@ -513,6 +513,38 @@ export default function Atendimento() {
     [],
   );
 
+  /** Nome real do grupo/contato resolvido pelo backend (Evolution API). */
+  useRealtimeSubscription(
+    WS_EVENTS.CONVERSATION_UPDATED,
+    (data: {
+      contactPhone?: string;
+      contactName?: string;
+      customTitle?: string | null;
+    }) => {
+      const phone = data?.contactPhone?.trim();
+      if (!phone) return;
+
+      const nextContactName =
+        typeof data.contactName === "string" && data.contactName.trim()
+          ? data.contactName.trim()
+          : undefined;
+      const customTitleProvided = data.customTitle !== undefined;
+
+      const patchGroup = (g: ConversationGroup): ConversationGroup => {
+        if (g.contactPhone !== phone) return g;
+        return {
+          ...g,
+          ...(nextContactName ? { contactName: nextContactName } : {}),
+          ...(customTitleProvided ? { customTitle: data.customTitle ?? null } : {}),
+        };
+      };
+
+      setConversations((prev) => prev.map(patchGroup));
+      setSelectedConversation((prev) => (prev ? patchGroup(prev) : prev));
+    },
+    [],
+  );
+
   // Subscribe to message sent confirmation
   useRealtimeSubscription(
     "message-sent",

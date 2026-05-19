@@ -375,9 +375,12 @@ export class WebhooksService {
           !!name &&
           name.trim() !== "" &&
           name.trim() !== "Grupo sem nome" &&
-          name.trim() !== "Desconhecido";
+          name.trim() !== "Desconhecido" &&
+          !this.looksLikeGroupJidName(name);
 
         if (isGroup && groupId) {
+          const isNewGroupContact = !contact;
+
           // (1) customTitle do banco — fonte de verdade no Shared Inbox
           if (contact?.customTitle && contact.customTitle.trim()) {
             groupName = contact.customTitle.trim();
@@ -385,21 +388,29 @@ export class WebhooksService {
               `📌 [Webhook] Reusando customTitle do contato (skip Evolution): ${groupName}`,
             );
           }
-          // (2) name em cache no banco
-          else if (hasDecentCachedName(contact?.name)) {
+          // (2) name em cache no banco (desde que não seja JID cru)
+          else if (
+            contact &&
+            hasDecentCachedName(contact.name) &&
+            !this.looksLikeGroupJidName(contact.name)
+          ) {
             groupName = contact!.name.trim();
             console.log(
               `📌 [Webhook] Reusando contact.name em cache (skip Evolution): ${groupName}`,
             );
           }
-          // (3) Evolution API com timeout curto (NUNCA aborta)
-          else {
+          // (3) Evolution API — primeira interação ou nome ainda é JID
+          else if (
+            isNewGroupContact ||
+            this.looksLikeGroupJidName(contact?.name) ||
+            !hasDecentCachedName(contact?.name)
+          ) {
             try {
               const evolution = await this.prisma.evolution.findUnique({
                 where: { evolutionName: line.evolutionName },
               });
               if (evolution) {
-                const realGroupName = await this.fetchGroupName(
+                const realGroupName = await this.resolveGroupSubject(
                   groupId,
                   evolution.evolutionUrl,
                   evolution.evolutionKey,
@@ -408,13 +419,11 @@ export class WebhooksService {
                 if (realGroupName && realGroupName.trim()) {
                   groupName = realGroupName.trim();
                   console.log(
-                    `✅ [Webhook] Nome do grupo via Evolution API: ${groupName}`,
+                    `✅ [Webhook] Nome do grupo via Evolution API (subject): ${groupName}`,
                   );
                 }
               }
             } catch (err: any) {
-              // Defesa extra: fetchGroupName já trata internamente, mas
-              // qualquer exceção no findUnique acima também é absorvida.
               console.warn(
                 `⚠️ [Webhook] Erro na resolução do nome do grupo (seguindo com fallback): ${err?.message}`,
               );
@@ -464,8 +473,7 @@ export class WebhooksService {
           hasDecentCachedName(groupName) &&
           contact.name !== groupName
         ) {
-          // Se o contato existe, é grupo, NÃO tem nome manual nem customTitle
-          // e o nome resolvido é mais "decente" que o atual → atualizar.
+          const previousName = contact.name;
           contact = await this.prisma.contact.update({
             where: { id: contact.id },
             data: { name: groupName! },
@@ -473,6 +481,16 @@ export class WebhooksService {
           console.log(
             `✅ [Webhook] Nome do grupo atualizado automaticamente: ${contact.name} (${contactIdentifier})`,
           );
+          if (
+            this.looksLikeGroupJidName(previousName) ||
+            previousName !== groupName
+          ) {
+            this.websocketGateway.emitConversationDisplayNameUpdated({
+              contactPhone: contactIdentifier,
+              contactName: contact.name,
+              customTitle: contact.customTitle,
+            });
+          }
         } else if (isGroup && (contact.isNameManual || contact.customTitle)) {
           console.log(
             `ℹ️ [Webhook] Grupo ${contactIdentifier} tem nome travado (customTitle/isNameManual), preservando: ${contact.customTitle || contact.name}`,
@@ -1061,28 +1079,51 @@ export class WebhooksService {
   }
 
   /**
-   * Busca o nome real do grupo via Evolution API.
-   *
-   * IMPORTANTE (Shared Inbox):
-   *   Este endpoint da Evolution (`GET /group/fetchAllGroups`) é
-   *   notoriamente instável (responde vazio, lento, ou com nome
-   *   desatualizado). Por isso aqui aplicamos contrato defensivo:
-   *
-   *     1. Timeout curto e único (5s). Nada de 2 tentativas com sleep —
-   *        no pior caso, o webhook só atrasa 5s e cai no fallback.
-   *     2. NUNCA lança. Sempre devolve `string | null`.
-   *     3. O caller é responsável por decidir o fallback se receber `null`
-   *        (ex.: usar customTitle, contact.name ou "Grupo <id>").
-   *
-   *   Esta função NUNCA deve causar o descarte da mensagem.
-   *
-   * @param groupId - ID do grupo (ex: 120363027798409612@g.us)
-   * @param evolutionUrl - URL da Evolution API
-   * @param evolutionKey - Chave de autenticação
-   * @param instanceName - Nome da instância
-   * @returns Nome do grupo ou `null` se não encontrar / timeout / erro
+   * Nome salvo ainda é o JID cru do WhatsApp (ex.: 120363…@g.us).
    */
-  private async fetchGroupName(
+  private looksLikeGroupJidName(name?: string | null): boolean {
+    if (!name || typeof name !== 'string') return false;
+    const t = name.trim();
+    return t.includes('@g.us') || /^[\d-]+@g\.us$/i.test(t);
+  }
+
+  /**
+   * Resolve o subject do grupo: findGroupInfos/MetaData (preciso) → fetchAllGroups (fallback).
+   */
+  private async resolveGroupSubject(
+    groupId: string,
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+  ): Promise<string | null> {
+    try {
+      const meta = await this.evolutionService.getGroupMetadata(
+        evolutionUrl,
+        evolutionKey,
+        instanceName,
+        groupId,
+      );
+      if (meta?.subject?.trim()) {
+        return meta.subject.trim();
+      }
+    } catch (err: any) {
+      console.warn(
+        `⚠️ [Webhook] getGroupMetadata falhou para ${groupId}: ${err?.message}`,
+      );
+    }
+
+    return this.fetchGroupNameFromAllGroups(
+      groupId,
+      evolutionUrl,
+      evolutionKey,
+      instanceName,
+    );
+  }
+
+  /**
+   * Fallback: lista todos os grupos e faz match por id (endpoint instável).
+   */
+  private async fetchGroupNameFromAllGroups(
     groupId: string,
     evolutionUrl: string,
     evolutionKey: string,
@@ -1121,7 +1162,7 @@ export class WebhooksService {
           ? `timeout (${TIMEOUT_MS}ms)`
           : error?.message || "erro desconhecido";
       console.warn(
-        `⚠️ [Webhook] fetchGroupName falhou para ${groupId}: ${reason}. ` +
+        `⚠️ [Webhook] fetchGroupNameFromAllGroups falhou para ${groupId}: ${reason}. ` +
           `Caller deve aplicar fallback — NUNCA descartar a mensagem.`,
       );
       return null;
@@ -1225,13 +1266,15 @@ export class WebhooksService {
             !!name &&
             name.trim() !== "" &&
             name.trim() !== "Grupo sem nome" &&
-            name.trim() !== "Desconhecido";
+            name.trim() !== "Desconhecido" &&
+            !this.looksLikeGroupJidName(name);
 
           let contactName: string =
             chat.name || chat.pushName || contactPhone;
 
           if (isGroup) {
             let resolvedGroupName: string | null = null;
+            const isNewGroupContact = !contact;
 
             // (1) customTitle do banco — fonte de verdade no Shared Inbox
             if (contact?.customTitle && contact.customTitle.trim()) {
@@ -1241,16 +1284,24 @@ export class WebhooksService {
               );
             }
             // (2) name em cache no banco
-            else if (hasDecentCachedName(contact?.name)) {
+            else if (
+              contact &&
+              hasDecentCachedName(contact.name) &&
+              !this.looksLikeGroupJidName(contact.name)
+            ) {
               resolvedGroupName = contact!.name.trim();
               console.log(
                 `📌 [Webhook/History] Reusando contact.name em cache (skip Evolution): ${resolvedGroupName}`,
               );
             }
-            // (3) Evolution API com timeout curto (NUNCA aborta)
-            else {
+            // (3) Evolution API — subject via findGroupInfos / fallback
+            else if (
+              isNewGroupContact ||
+              this.looksLikeGroupJidName(contact?.name) ||
+              !hasDecentCachedName(contact?.name)
+            ) {
               try {
-                const apiName = await this.fetchGroupName(
+                const apiName = await this.resolveGroupSubject(
                   remoteJid,
                   evolutionUrl,
                   evolutionKey,
@@ -1263,7 +1314,6 @@ export class WebhooksService {
                   );
                 }
               } catch (err: any) {
-                // Defesa extra: fetchGroupName já trata internamente.
                 console.warn(
                   `⚠️ [Webhook/History] Erro na resolução do nome do grupo (seguindo com fallback): ${err?.message}`,
                 );

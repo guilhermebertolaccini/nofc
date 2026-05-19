@@ -3161,26 +3161,28 @@ export class WebsocketGateway
   }
 
   /**
-   * Emite uma `new_message` para todos os destinatários relevantes,
-   * GARANTINDO que cada socket receba NO MÁXIMO 1 cópia.
-   *
-   * Histórico do bug (Shared Inbox):
-   *   A versão anterior fazia 3 disparos para o mesmo evento:
-   *     (a) `this.server.to(room).emit(...)` para a room da conversa
-   *     (b) `this.server.to(socketId).emit(...)` para o `userId` atribuído
-   *     (c) loop em `lineOperators` emitindo para cada um individualmente
-   *   Um operador que estivesse com o chat aberto (na room) E fosse o
-   *   atribuído E estivesse vinculado à linha recebia 3 balões iguais.
-   *
-   * Estratégia agora:
-   *   1. Coletar quais socketIds JÁ ESTÃO na room da conversa
-   *      (esses serão entregues pelo emit-room).
-   *   2. Emitir UMA vez para a room (`server.to(room).emit`).
-   *   3. Para os destinatários "de sidebar" (operadores online da linha +
-   *      supervisores do segmento), emitir 1 cópia APENAS se o seu
-   *      socket NÃO estiver na room — assim quem tem o chat aberto não
-   *      duplica, e quem não tem ainda atualiza a lista lateral.
+   * Nome de exibição do contato/grupo atualizado (ex.: subject resolvido via Evolution).
+   * Sidebar e chats abertos podem ouvir `conversation_updated`.
    */
+  emitConversationDisplayNameUpdated(data: {
+    contactPhone: string;
+    contactName: string;
+    customTitle?: string | null;
+  }) {
+    if (!data?.contactPhone) return;
+    const payload = {
+      contactPhone: data.contactPhone,
+      contactName: data.contactName,
+      customTitle: data.customTitle ?? null,
+    };
+    const room = this.buildConversationRoom(data.contactPhone);
+    this.server.to(room).emit("conversation_updated", payload);
+    this.server.emit("conversation_updated", payload);
+    console.log(
+      `🏷️ [WebSocket] conversation_updated → ${data.contactPhone} = "${data.contactName}"`,
+    );
+  }
+
   async emitNewMessage(conversation: any) {
     if (!conversation?.contactPhone) {
       console.warn(
