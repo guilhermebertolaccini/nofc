@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { RenameContactDto } from './dto/rename-contact.dto';
+import { EvolutionService } from '../evolution/evolution.service';
+import { WebsocketGateway } from '../websocket/websocket.gateway';
 
 /**
  * Helper de exibição (Shared Inbox).
@@ -22,7 +24,11 @@ export function resolveDisplayTitle(
 
 @Injectable()
 export class ContactsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private evolutionService: EvolutionService,
+    private websocketGateway: WebsocketGateway,
+  ) {}
 
   async create(createContactDto: CreateContactDto) {
     // Criar o contato
@@ -186,5 +192,161 @@ export class ContactsService {
       ...contact,
       displayTitle: resolveDisplayTitle(contact.customTitle, contact.name),
     };
+  }
+
+  /**
+   * Sincroniza em lote nomes reais de grupos antigos via Evolution API.
+   * Alvo: contatos @g.us cujo name ainda é JID genérico ou "Grupo …".
+   */
+  async syncOldGroupNames(instanceName: string) {
+    const { evolution, apiInstanceName } =
+      await this.resolveEvolutionForInstance(instanceName);
+
+    const staleGroups = await this.prisma.contact.findMany({
+      where: {
+        phone: { endsWith: '@g.us' },
+        isNameManual: false,
+        customTitle: null,
+        OR: [
+          { name: { contains: '@g.us' } },
+          { name: { startsWith: 'Grupo ' } },
+        ],
+      },
+      orderBy: { id: 'asc' },
+    });
+
+    const result = {
+      instanceName: apiInstanceName,
+      total: staleGroups.length,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      items: [] as Array<{
+        phone: string;
+        previousName: string;
+        newName?: string;
+        status: 'updated' | 'skipped' | 'failed';
+        reason?: string;
+      }>,
+    };
+
+    for (const contact of staleGroups) {
+      try {
+        const meta = await this.evolutionService.getGroupMetadata(
+          evolution.evolutionUrl,
+          evolution.evolutionKey,
+          apiInstanceName,
+          contact.phone,
+        );
+
+        const subject = meta?.subject?.trim();
+        if (!subject || this.looksLikeGenericGroupName(subject)) {
+          result.skipped += 1;
+          result.items.push({
+            phone: contact.phone,
+            previousName: contact.name,
+            status: 'skipped',
+            reason: subject
+              ? 'subject ainda genérico ou inválido'
+              : 'Evolution não retornou subject',
+          });
+        } else if (subject === contact.name) {
+          result.skipped += 1;
+          result.items.push({
+            phone: contact.phone,
+            previousName: contact.name,
+            newName: subject,
+            status: 'skipped',
+            reason: 'nome já atualizado',
+          });
+        } else {
+          const updated = await this.prisma.contact.update({
+            where: { id: contact.id },
+            data: { name: subject },
+          });
+
+          await this.prisma.conversation.updateMany({
+            where: { contactPhone: contact.phone },
+            data: { contactName: subject },
+          });
+
+          this.websocketGateway.emitConversationDisplayNameUpdated({
+            contactPhone: contact.phone,
+            contactName: updated.name,
+            customTitle: updated.customTitle,
+          });
+
+          result.updated += 1;
+          result.items.push({
+            phone: contact.phone,
+            previousName: contact.name,
+            newName: subject,
+            status: 'updated',
+          });
+        }
+      } catch (err: any) {
+        result.failed += 1;
+        result.items.push({
+          phone: contact.phone,
+          previousName: contact.name,
+          status: 'failed',
+          reason: err?.message || 'erro desconhecido',
+        });
+      }
+
+      await this.sleep(750);
+    }
+
+    return result;
+  }
+
+  private looksLikeGenericGroupName(name?: string | null): boolean {
+    if (!name || typeof name !== 'string') return true;
+    const t = name.trim();
+    if (!t) return true;
+    return t.includes('@g.us') || t.startsWith('Grupo ');
+  }
+
+  private async resolveEvolutionForInstance(instanceName: string) {
+    const normalized = instanceName.trim();
+    const phoneNumber = normalized.replace(/^line_/, '');
+
+    const line = await this.prisma.linesStock.findFirst({
+      where: {
+        OR: [
+          { phone: normalized },
+          { phone: phoneNumber },
+          { phone: { endsWith: phoneNumber } },
+          { evolutionName: normalized },
+        ],
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    if (!line) {
+      throw new NotFoundException(
+        `Linha/instância não encontrada para: ${instanceName}`,
+      );
+    }
+
+    const evolution = await this.prisma.evolution.findUnique({
+      where: { evolutionName: line.evolutionName },
+    });
+
+    if (!evolution) {
+      throw new NotFoundException(
+        `Evolution não configurada: ${line.evolutionName}`,
+      );
+    }
+
+    return {
+      evolution,
+      apiInstanceName: normalized,
+      line,
+    };
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

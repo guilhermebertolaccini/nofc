@@ -52,6 +52,11 @@ export class WebhooksService {
           return { status: "ignored", reason: "No message data or key" };
         }
 
+        if (this.isPlaceholderMessage(message, data)) {
+          console.log("[Webhook] Ignorando placeholderMessage");
+          return { status: "ignored", reason: "placeholderMessage" };
+        }
+
         // ─────────────────────────────────────────────────────────────────
         // SHARED INBOX — `fromMe: true` deve ser PROCESSADO, não descartado.
         //
@@ -1079,6 +1084,18 @@ export class WebhooksService {
   }
 
   /**
+   * Eventos de sincronização de criptografia do WhatsApp — não são mensagens visíveis.
+   */
+  private isPlaceholderMessage(message: any, data?: any): boolean {
+    const topType = message?.messageType ?? data?.messageType;
+    if (topType === "placeholderMessage") return true;
+    if (message?.placeholderMessage) return true;
+    const inner = message?.message;
+    if (inner?.placeholderMessage) return true;
+    return this.getMessageType(inner) === "placeholderMessage";
+  }
+
+  /**
    * Nome salvo ainda é o JID cru do WhatsApp (ex.: 120363…@g.us).
    */
   private looksLikeGroupJidName(name?: string | null): boolean {
@@ -1802,6 +1819,7 @@ export class WebhooksService {
 
   private getMessageType(message: any): string {
     const m = this.unwrapNestedMessageContent(message);
+    if (m?.placeholderMessage) return "placeholderMessage";
     if (m?.reactionMessage) return "reaction";
     if (
       m?.templateMessage ||

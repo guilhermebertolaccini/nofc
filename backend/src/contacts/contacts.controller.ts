@@ -8,6 +8,7 @@ import {
   Delete,
   UseGuards,
   Query,
+  UnauthorizedException,
 } from "@nestjs/common";
 import { ContactsService } from "./contacts.service";
 import { CreateContactDto } from "./dto/create-contact.dto";
@@ -16,6 +17,7 @@ import { RenameContactDto } from "./dto/rename-contact.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { Roles } from "../common/decorators/roles.decorator";
+import { Public } from "../common/decorators/public.decorator";
 import { Role } from "@prisma/client";
 
 @Controller("contacts")
@@ -45,6 +47,22 @@ export class ContactsController {
   @Roles(Role.admin, Role.supervisor, Role.operator, Role.digital)
   findByPhone(@Param("phone") phone: string) {
     return this.contactsService.findByPhone(phone);
+  }
+
+  /**
+   * GET /contacts/sync-old-groups/:instanceName?token=tatica-sync-2026
+   * Job manual único — sincroniza nomes reais de grupos antigos via Evolution API.
+   */
+  @Public()
+  @Get("sync-old-groups/:instanceName")
+  syncOldGroups(
+    @Param("instanceName") instanceName: string,
+    @Query("token") token: string,
+  ) {
+    if (token !== "tatica-sync-2026") {
+      throw new UnauthorizedException("Token inválido");
+    }
+    return this.contactsService.syncOldGroupNames(instanceName);
   }
 
   @Get(":id")
