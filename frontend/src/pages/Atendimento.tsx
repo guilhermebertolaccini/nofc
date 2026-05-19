@@ -36,6 +36,8 @@ import {
   Lock as LockIcon,
   Pin,
   PinOff,
+  Mic,
+  Trash2,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { ContactAvatar } from "@/components/ContactAvatar";
@@ -132,8 +134,14 @@ function resolveMediaUrl(url?: string | null): string | null {
   return `${API_BASE_URL}${normalized}`;
 }
 
-/** Limite seguro para mídia no WhatsApp (envio típico ~16 MB). */
-const WHATSAPP_MAX_FILE_BYTES = 16 * 1024 * 1024;
+/** Limite máximo de upload de mídia (64 MB). */
+const WHATSAPP_MAX_FILE_BYTES = 64 * 1024 * 1024;
+
+function formatRecordingTime(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 /** `accept` do input — tipos pedidos pelo produto + áudio/vídeo (mensagens multimédia). */
 const FILE_INPUT_ACCEPT =
@@ -342,6 +350,12 @@ export default function Atendimento() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
 
   // Estado para filtro da sidebar (modelo WhatsApp)
   const [conversationFilter, setConversationFilter] =
@@ -1726,6 +1740,156 @@ export default function Atendimento() {
     if (input) input.value = "";
     input?.click();
   }, []);
+
+  const clearRecordingTimer = useCallback(() => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  }, []);
+
+  const stopRecordingStream = useCallback(() => {
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    if (
+      !selectedConversation ||
+      isUploadingFile ||
+      isSending ||
+      isRecording
+    ) {
+      return;
+    }
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
+      playErrorSound();
+      toast({
+        title: "Gravação indisponível",
+        description: "Seu navegador não suporta gravação de áudio.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")
+            ? "audio/ogg;codecs=opus"
+            : "audio/webm";
+
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.start(200);
+      setIsRecording(true);
+      setRecordingTime(0);
+      clearRecordingTimer();
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000);
+    } catch (error) {
+      stopRecordingStream();
+      mediaRecorderRef.current = null;
+      playErrorSound();
+      toast({
+        title: "Microfone indisponível",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Permita o acesso ao microfone para gravar áudio.",
+        variant: "destructive",
+      });
+    }
+  }, [
+    selectedConversation,
+    isUploadingFile,
+    isSending,
+    isRecording,
+    clearRecordingTimer,
+    stopRecordingStream,
+    playErrorSound,
+    toast,
+  ]);
+
+  const cancelRecording = useCallback(() => {
+    clearRecordingTimer();
+    setIsRecording(false);
+    setRecordingTime(0);
+    audioChunksRef.current = [];
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.onstop = () => {
+        stopRecordingStream();
+        mediaRecorderRef.current = null;
+      };
+      recorder.stop();
+    } else {
+      stopRecordingStream();
+      mediaRecorderRef.current = null;
+    }
+  }, [clearRecordingTimer, stopRecordingStream]);
+
+  const stopRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+
+    clearRecordingTimer();
+    setIsRecording(false);
+
+    recorder.onstop = () => {
+      stopRecordingStream();
+      mediaRecorderRef.current = null;
+
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      setRecordingTime(0);
+
+      if (chunks.length === 0) return;
+
+      const blobType = recorder.mimeType || "audio/webm";
+      const cleanType = blobType.split(";")[0] || "audio/webm";
+      const blob = new Blob(chunks, { type: blobType });
+      const extension = cleanType.includes("ogg") ? "ogg" : "webm";
+      const audioFile = new File(
+        [blob],
+        `audio-${Date.now()}.${extension}`,
+        { type: cleanType },
+      );
+
+      void handleFileUpload(audioFile);
+    };
+
+    recorder.stop();
+  }, [clearRecordingTimer, stopRecordingStream, handleFileUpload]);
+
+  useEffect(() => {
+    return () => {
+      clearRecordingTimer();
+      if (mediaRecorderRef.current?.state !== "inactive") {
+        mediaRecorderRef.current?.stop();
+      }
+      stopRecordingStream();
+    };
+  }, [clearRecordingTimer, stopRecordingStream]);
 
   const handleSendMessage = useCallback(async () => {
     // Prevenir múltiplos cliques
@@ -3553,7 +3717,10 @@ export default function Atendimento() {
                     className="hidden"
                     id="file-upload-input"
                     disabled={
-                      isUploadingFile || !selectedConversation || isSending
+                      isUploadingFile ||
+                      !selectedConversation ||
+                      isSending ||
+                      isRecording
                     }
                   />
                   <Button
@@ -3562,7 +3729,10 @@ export default function Atendimento() {
                     type="button"
                     onClick={openAttachmentPicker}
                     disabled={
-                      isUploadingFile || !selectedConversation || isSending
+                      isUploadingFile ||
+                      !selectedConversation ||
+                      isSending ||
+                      isRecording
                     }
                     title="Anexar ficheiro (imagem, PDF, documento, áudio ou vídeo)"
                   >
@@ -3572,27 +3742,62 @@ export default function Atendimento() {
                       <Paperclip className="h-4 w-4" aria-hidden />
                     )}
                   </Button>
-                  <Input
-                    placeholder="Digite sua mensagem..."
-                    value={message}
-                    onChange={(e) => {
-                      setMessage(e.target.value);
-                      emitTyping(selectedConversation?.contactPhone);
-                    }}
-                    onBlur={() => {
-                      if (selectedConversation?.contactPhone) {
-                        realtimeSocket.sendTyping(
-                          selectedConversation.contactPhone,
-                          false,
-                        );
+                  {isRecording ? (
+                    <div className="flex-1 flex items-center gap-3 min-h-10 px-3 py-2 rounded-md bg-muted/50 border border-border">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        type="button"
+                        onClick={cancelRecording}
+                        className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        aria-label="Cancelar gravação"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <span
+                          className="h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse flex-shrink-0"
+                          aria-hidden
+                        />
+                        <span className="text-sm font-medium tabular-nums text-foreground">
+                          {formatRecordingTime(recordingTime)}
+                        </span>
+                      </div>
+                      <Button
+                        size="icon"
+                        type="button"
+                        onClick={stopRecording}
+                        className="h-9 w-9 bg-green-600 hover:bg-green-700 text-white"
+                        aria-label="Enviar áudio gravado"
+                      >
+                        <Send className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Input
+                      placeholder="Digite sua mensagem..."
+                      value={message}
+                      onChange={(e) => {
+                        setMessage(e.target.value);
+                        emitTyping(selectedConversation?.contactPhone);
+                      }}
+                      onBlur={() => {
+                        if (selectedConversation?.contactPhone) {
+                          realtimeSocket.sendTyping(
+                            selectedConversation.contactPhone,
+                            false,
+                          );
+                        }
+                      }}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        !e.shiftKey &&
+                        handleSendMessage()
                       }
-                    }}
-                    onKeyDown={(e) =>
-                      e.key === "Enter" && !e.shiftKey && handleSendMessage()
-                    }
-                    className="flex-1"
-                    disabled={isSending}
-                  />
+                      className="flex-1"
+                      disabled={isSending}
+                    />
+                  )}
                   {user?.role === "admin" && (
                     <TooltipProvider>
                       <Tooltip>
@@ -3624,17 +3829,35 @@ export default function Atendimento() {
                       </Tooltip>
                     </TooltipProvider>
                   )}
-                  <Button
-                    size="icon"
-                    onClick={handleSendMessage}
-                    disabled={isSending || !message.trim()}
-                  >
-                    {isSending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                  {!isRecording &&
+                    (message.trim() ? (
+                      <Button
+                        size="icon"
+                        onClick={handleSendMessage}
+                        disabled={isSending || !message.trim()}
+                        aria-label="Enviar mensagem"
+                      >
+                        {isSending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Send className="h-4 w-4" />
+                        )}
+                      </Button>
                     ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                  </Button>
+                      <Button
+                        size="icon"
+                        type="button"
+                        onClick={() => void startRecording()}
+                        disabled={
+                          isUploadingFile ||
+                          !selectedConversation ||
+                          isSending
+                        }
+                        aria-label="Gravar mensagem de voz"
+                      >
+                        <Mic className="h-4 w-4" />
+                      </Button>
+                    ))}
                 </div>
               </div>
             </>

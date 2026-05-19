@@ -1569,11 +1569,11 @@ export class WebsocketGateway
                 // Ler arquivo
                 const fileBuffer = await fs.readFile(filePath);
 
-                // Validar tamanho do arquivo (máximo 200MB)
-                const maxSizeBytes = 200 * 1024 * 1024; // 200MB
+                // Validar tamanho do arquivo (máximo 64MB)
+                const maxSizeBytes = 64 * 1024 * 1024; // 64MB
                 if (fileBuffer.length > maxSizeBytes) {
                   throw new Error(
-                    `Arquivo muito grande: ${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB. Máximo permitido: 200MB`,
+                    `Arquivo muito grande: ${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB. Máximo permitido: 64MB`,
                   );
                 }
 
