@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma.service';
 import * as fs from 'fs/promises';
@@ -40,24 +40,28 @@ export class MediaService {
   }
 
   /**
-   * Lê mídia enviada pelo operador (/media/...) e retorna data URI para a Evolution.
+   * Extrai o nome do arquivo salvo pelo Multer a partir de qualquer URL (/media/... ou https://.../media/...).
    */
-  async readUploadedMediaAsDataUri(
-    mediaUrl: string,
-  ): Promise<{ dataUri: string; mimeType: string }> {
-    let filename: string;
+  private extractUploadFilename(mediaUrl: string): string {
+    const sanitized = mediaUrl.split('?')[0].split('#')[0].trim();
+    const filename = sanitized.split('/').pop();
 
-    if (mediaUrl.startsWith('/media/')) {
-      filename = mediaUrl.replace('/media/', '');
-    } else if (mediaUrl.startsWith('http')) {
-      const urlPath = new URL(mediaUrl).pathname;
-      filename = urlPath.replace(/^\/media\//, '');
-    } else {
-      filename = mediaUrl.replace(/^\/media\//, '');
+    if (!filename) {
+      throw new BadRequestException(
+        `Nome de arquivo inválido na URL de mídia: ${mediaUrl}`,
+      );
     }
 
-    const filePath = await this.getFilePath(filename);
-    const buffer = await fs.readFile(filePath);
+    return decodeURIComponent(filename);
+  }
+
+  private buildDataUriFromBuffer(
+    buffer: Buffer,
+    filename: string,
+  ): { dataUri: string; mimeType: string } {
+    if (!buffer.length) {
+      throw new BadRequestException(`Arquivo de áudio vazio: ${filename}`);
+    }
 
     const ext = filename.split('.').pop()?.toLowerCase() ?? '';
     const mimeByExt: Record<string, string> = {
@@ -75,6 +79,32 @@ export class MediaService {
       dataUri: `data:${mimeType};base64,${buffer.toString('base64')}`,
       mimeType,
     };
+  }
+
+  /**
+   * Lê mídia enviada pelo operador (/media/...) e retorna data URI para a Evolution.
+   */
+  async readUploadedMediaAsDataUri(
+    mediaUrl: string,
+  ): Promise<{ dataUri: string; mimeType: string }> {
+    const filename = this.extractUploadFilename(mediaUrl);
+    const absolutePath = path.join(process.cwd(), 'uploads', filename);
+
+    try {
+      await fs.access(absolutePath);
+      const buffer = await fs.readFile(absolutePath);
+      return this.buildDataUriFromBuffer(buffer, filename);
+    } catch {
+      try {
+        const fallbackPath = await this.getFilePath(filename);
+        const buffer = await fs.readFile(fallbackPath);
+        return this.buildDataUriFromBuffer(buffer, filename);
+      } catch {
+        throw new BadRequestException(
+          `Arquivo de áudio não encontrado em disco: ${filename}`,
+        );
+      }
+    }
   }
 
   /**
