@@ -354,7 +354,7 @@ export function AppSidebar({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 flex-shrink-0"
+                  className="h-8 w-8 flex-shrink-0 bg-white text-sidebar hover:bg-white/90 hover:text-sidebar shadow-sm"
                   onClick={onToggleCollapse}
                   aria-label={
                     isCollapsed
