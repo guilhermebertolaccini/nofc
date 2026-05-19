@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, createElement, type MouseEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /** Aceita só http(s) para evitar javascript: e outros esquemas em href. */
@@ -77,6 +77,10 @@ function collectSegments(text: string): TextSegment[] {
 
 /**
  * Transforma URLs http(s) e telefones BR em elementos clicáveis.
+ *
+ * Elementos nativos do DOM são criados via createElement("a" | "button")
+ * com tag em minúsculas — nunca use JSX com maiúsculas (<A>, <Span>, <Text>),
+ * pois o React pode confundir com construtores globais (window.Text, etc.).
  */
 export function renderTextWithLinks(
   text: string,
@@ -111,20 +115,22 @@ export function renderTextWithLinks(
       const safe = hrefIfSafeHttpUrl(core);
       if (safe) {
         parts.push(
-          <a
-            key={`link-${k++}`}
-            href={safe}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={cn(
-              "underline break-all font-medium",
-              isOutbound
-                ? "text-blue-200 hover:text-white"
-                : "text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300",
-            )}
-          >
-            {core}
-          </a>,
+          createElement(
+            "a",
+            {
+              key: `link-${k++}`,
+              href: safe,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              className: cn(
+                "underline break-all font-medium",
+                isOutbound
+                  ? "text-blue-200 hover:text-white"
+                  : "text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300",
+              ),
+            },
+            core,
+          ),
         );
         if (trailing) parts.push(trailing);
       } else {
@@ -133,23 +139,25 @@ export function renderTextWithLinks(
     } else if (seg.type === "phone" && canHandlePhone) {
       const cleanPhone = normalizeBrazilPhoneDigits(seg.raw);
       parts.push(
-        <button
-          key={`phone-${k++}`}
-          type="button"
-          className={cn(
-            "inline underline cursor-pointer font-semibold break-all bg-transparent border-0 p-0 text-left align-baseline",
-            isOutbound
-              ? "text-green-200 hover:text-white"
-              : "text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300",
-          )}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onPhoneClick(cleanPhone);
-          }}
-        >
-          {seg.raw}
-        </button>,
+        createElement(
+          "button",
+          {
+            key: `phone-${k++}`,
+            type: "button",
+            className: cn(
+              "inline underline cursor-pointer font-semibold break-all bg-transparent border-0 p-0 text-left align-baseline",
+              isOutbound
+                ? "text-green-200 hover:text-white"
+                : "text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300",
+            ),
+            onClick: (e: MouseEvent<HTMLButtonElement>) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onPhoneClick(cleanPhone);
+            },
+          },
+          seg.raw,
+        ),
       );
     } else {
       parts.push(seg.raw);
@@ -161,5 +169,5 @@ export function renderTextWithLinks(
   if (last < source.length) parts.push(source.slice(last));
   if (parts.length === 0) return null;
   if (parts.length === 1) return parts[0];
-  return <Fragment>{parts}</Fragment>;
+  return createElement(Fragment, null, ...parts);
 }
