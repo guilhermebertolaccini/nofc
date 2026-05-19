@@ -4,6 +4,9 @@ import {
   useCallback,
   useRef,
   useMemo,
+  createElement,
+  type ChangeEvent,
+  type SyntheticEvent,
 } from "react";
 import {
   Plus,
@@ -30,6 +33,7 @@ import {
   MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
+  Lock as LockIcon,
 } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { MainLayout } from "@/components/layout/MainLayout";
@@ -1586,7 +1590,7 @@ export default function Atendimento() {
 
   // Handler para seleção de arquivo
   const handleFileSelect = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
+    (e: ChangeEvent<HTMLInputElement>) => {
       const input = e.target;
       const file = input.files?.[0];
       if (!file) {
@@ -3159,7 +3163,7 @@ export default function Atendimento() {
                                     : "opacity-90",
                                 )}
                               >
-                                <Lock
+                                <LockIcon
                                   className="h-4 w-4 shrink-0"
                                   aria-hidden
                                 />
@@ -3172,7 +3176,7 @@ export default function Atendimento() {
                                 item.msg.mediaUrl,
                               );
                               const onImgError = (
-                                e: React.SyntheticEvent<HTMLImageElement>,
+                                e: SyntheticEvent<HTMLImageElement>,
                               ) => {
                                 // Fallback gracioso: se a URL não carregar,
                                 // mostramos o balão semi-transparente em vez de
@@ -3191,16 +3195,16 @@ export default function Atendimento() {
                               ) {
                                 return (
                                   <div className="mb-2">
-                                    <img
-                                      src={resolvedUrl}
-                                      alt="Imagem"
-                                      className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-                                      style={{ maxHeight: "300px" }}
-                                      onClick={() =>
-                                        window.open(resolvedUrl, "_blank")
-                                      }
-                                      onError={onImgError}
-                                    />
+                                    {createElement("img", {
+                                      src: resolvedUrl,
+                                      alt: "Imagem",
+                                      className:
+                                        "max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity",
+                                      style: { maxHeight: "300px" },
+                                      onClick: () =>
+                                        window.open(resolvedUrl, "_blank"),
+                                      onError: onImgError,
+                                    })}
                                     {item.msg.message &&
                                       !item.msg.message.includes("recebida") && (
                                         <p className="text-sm mt-2">
@@ -3219,25 +3223,23 @@ export default function Atendimento() {
                                 item.msg.messageType === "sticker" &&
                                 resolvedUrl
                               ) {
-                                // Figurinhas: <img> com max-width menor para
+                                // Figurinhas: img com max-width menor para
                                 // preservar a estética de sticker do WhatsApp.
-                                // Sem caption (stickers não têm legenda) e sem
-                                // fundo de balão pesado.
                                 return (
                                   <div className="mb-1">
-                                    <img
-                                      src={resolvedUrl}
-                                      alt="Figurinha"
-                                      className="rounded-md cursor-pointer hover:opacity-90 transition-opacity"
-                                      style={{
+                                    {createElement("img", {
+                                      src: resolvedUrl,
+                                      alt: "Figurinha",
+                                      className:
+                                        "rounded-md cursor-pointer hover:opacity-90 transition-opacity",
+                                      style: {
                                         maxWidth: "160px",
                                         maxHeight: "160px",
-                                      }}
-                                      onClick={() =>
-                                        window.open(resolvedUrl, "_blank")
-                                      }
-                                      onError={onImgError}
-                                    />
+                                      },
+                                      onClick: () =>
+                                        window.open(resolvedUrl, "_blank"),
+                                      onError: onImgError,
+                                    })}
                                   </div>
                                 );
                               }
@@ -3248,13 +3250,15 @@ export default function Atendimento() {
                               ) {
                                 return (
                                   <div className="mb-2">
-                                    <audio
-                                      controls
-                                      className="max-w-full"
-                                      src={resolvedUrl}
-                                    >
-                                      Seu navegador não suporta áudio.
-                                    </audio>
+                                    {createElement(
+                                      "audio",
+                                      {
+                                        controls: true,
+                                        className: "max-w-full",
+                                        src: resolvedUrl,
+                                      },
+                                      "Seu navegador não suporta áudio.",
+                                    )}
                                   </div>
                                 );
                               }
@@ -3265,14 +3269,16 @@ export default function Atendimento() {
                               ) {
                                 return (
                                   <div className="mb-2">
-                                    <video
-                                      controls
-                                      className="max-w-full rounded-lg"
-                                      style={{ maxHeight: "300px" }}
-                                      src={resolvedUrl}
-                                    >
-                                      Seu navegador não suporta vídeo.
-                                    </video>
+                                    {createElement(
+                                      "video",
+                                      {
+                                        controls: true,
+                                        className: "max-w-full rounded-lg",
+                                        style: { maxHeight: "300px" },
+                                        src: resolvedUrl,
+                                      },
+                                      "Seu navegador não suporta vídeo.",
+                                    )}
                                     {item.msg.message &&
                                       !item.msg.message.includes("recebido") && (
                                         <p className="text-sm mt-2">

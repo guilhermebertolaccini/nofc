@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, createElement } from "react";
 import {
   MessageCircle,
   ArrowRight,
@@ -718,24 +718,22 @@ export default function Supervisionar() {
                             {item.msg.messageType === "image" &&
                             item.msg.mediaUrl ? (
                               <div className="mb-2">
-                                <img
-                                  src={
-                                    item.msg.mediaUrl.startsWith("http")
-                                      ? item.msg.mediaUrl
-                                      : `${API_BASE_URL}${item.msg.mediaUrl}`
-                                  }
-                                  alt="Imagem"
-                                  className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-                                  style={{ maxHeight: "300px" }}
-                                  onClick={() =>
+                                {createElement("img", {
+                                  src: item.msg.mediaUrl.startsWith("http")
+                                    ? item.msg.mediaUrl
+                                    : `${API_BASE_URL}${item.msg.mediaUrl}`,
+                                  alt: "Imagem",
+                                  className:
+                                    "max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity",
+                                  style: { maxHeight: "300px" },
+                                  onClick: () =>
                                     window.open(
                                       item.msg.mediaUrl!.startsWith("http")
                                         ? item.msg.mediaUrl!
                                         : `${API_BASE_URL}${item.msg.mediaUrl}`,
-                                      "_blank"
-                                    )
-                                  }
-                                />
+                                      "_blank",
+                                    ),
+                                })}
                                 {item.msg.message &&
                                   !item.msg.message.includes("recebida") && (
                                     <p className="text-sm mt-2">
@@ -750,33 +748,29 @@ export default function Supervisionar() {
                             ) : item.msg.messageType === "audio" &&
                               item.msg.mediaUrl ? (
                               <div className="mb-2">
-                                <audio
-                                  controls
-                                  className="max-w-full"
-                                  src={
-                                    item.msg.mediaUrl.startsWith("http")
-                                      ? item.msg.mediaUrl
-                                      : `${API_BASE_URL}${item.msg.mediaUrl}`
-                                  }
-                                >
-                                  Seu navegador não suporta áudio.
-                                </audio>
+                                {createElement("audio", {
+                                  controls: true,
+                                  className: "max-w-full",
+                                  src: item.msg.mediaUrl.startsWith("http")
+                                    ? item.msg.mediaUrl
+                                    : `${API_BASE_URL}${item.msg.mediaUrl}`,
+                                }, "Seu navegador não suporta áudio.")}
                               </div>
                             ) : item.msg.messageType === "video" &&
                               item.msg.mediaUrl ? (
                               <div className="mb-2">
-                                <video
-                                  controls
-                                  className="max-w-full rounded-lg"
-                                  style={{ maxHeight: "300px" }}
-                                  src={
-                                    item.msg.mediaUrl.startsWith("http")
+                                {createElement(
+                                  "video",
+                                  {
+                                    controls: true,
+                                    className: "max-w-full rounded-lg",
+                                    style: { maxHeight: "300px" },
+                                    src: item.msg.mediaUrl.startsWith("http")
                                       ? item.msg.mediaUrl
-                                      : `${API_BASE_URL}${item.msg.mediaUrl}`
-                                  }
-                                >
-                                  Seu navegador não suporta vídeo.
-                                </video>
+                                      : `${API_BASE_URL}${item.msg.mediaUrl}`,
+                                  },
+                                  "Seu navegador não suporta vídeo.",
+                                )}
                                 {item.msg.message &&
                                   !item.msg.message.includes("recebido") && (
                                     <p className="text-sm mt-2">
