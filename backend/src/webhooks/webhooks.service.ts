@@ -132,10 +132,12 @@ export class WebhooksService {
 
         console.log("📱 Mensagem de:", from, "| fromMe:", message.key.fromMe);
 
+        const resolvedContent = this.resolveMessageContent(message);
+
         // Reações WhatsApp (Evolution: message.reactionMessage) — tratadas
         // antes do pipeline de mídia/texto normal: atualizam a mensagem-alvo
         // no banco + emitem `message_reaction`, ou gravam linha órfã.
-        const messageKindEarly = this.getMessageType(message.message);
+        const messageKindEarly = this.getMessageType(resolvedContent);
         if (messageKindEarly === "reaction") {
           const instanceName = data.instance || data.instanceName;
           const phoneNumber = instanceName?.replace("line_", "");
@@ -176,21 +178,21 @@ export class WebhooksService {
         }
 
         // Extrair texto da mensagem (templates HSM, listas, botões, wrappers Baileys)
-        // Stickers nunca têm caption — usamos "Figurinha" como rótulo
-        // (o frontend renderiza a imagem em vez do texto quando há mediaUrl).
-        const messageText = this.extractDisplayMessageText(
-          message.message,
-          "Mensagem recebida",
-        );
+        // Tipos não reconhecidos caem no catch-all → texto de aviso + messageType=text.
+        const { text: messageText, messageType } =
+          this.extractMessageForPersistence(
+            resolvedContent,
+            message,
+            "Mensagem recebida",
+          );
 
         console.log("💬 Texto:", messageText);
 
-        const messageType = this.getMessageType(message.message);
-        let mediaUrl = this.getMediaUrl(message.message);
+        let mediaUrl = this.getMediaUrl(resolvedContent);
 
         const documentSourceFileName =
           messageType === "document"
-            ? this.getDocumentSourceFileName(message.message)
+            ? this.getDocumentSourceFileName(resolvedContent)
             : undefined;
 
         // Buscar a linha que recebeu a mensagem
@@ -238,7 +240,7 @@ export class WebhooksService {
         // Processar mídia base64 se a linha tiver receiveMedia ativado
         if (line.receiveMedia && messageType !== "text") {
           console.log("🔍 [Webhook] Tentando extrair mídia Base64...");
-          let base64Media = this.extractBase64Media(message.message);
+          let base64Media = this.extractBase64Media(resolvedContent);
 
           // Se não encontrou base64 no payload, tentar buscar via API
           if (!base64Media) {
@@ -1115,7 +1117,7 @@ export class WebhooksService {
       return true;
     }
 
-    const inner = message?.message;
+    const inner = this.resolveMessageContent(message);
     if (inner?.placeholderMessage || inner?.secretEncryptedMessage) {
       return true;
     }
@@ -1542,18 +1544,21 @@ export class WebhooksService {
                 continue;
               }
 
+              const resolvedMsgContent = this.resolveMessageContent(msg);
               const isFromMe = !!msg.key?.fromMe;
 
-              const messageText =
-                (msg.message?.reactionMessage?.text
-                  ? `Reagiu com: ${msg.message.reactionMessage.text}`
-                  : null) ||
-                this.extractDisplayMessageText(
-                  msg.message,
-                  "Mensagem importada",
-                );
+              const extractedForImport = this.extractMessageForPersistence(
+                resolvedMsgContent,
+                msg,
+                "Mensagem importada",
+              );
 
-              const messageType = this.getMessageType(msg.message);
+              const messageText =
+                (resolvedMsgContent?.reactionMessage?.text
+                  ? `Reagiu com: ${resolvedMsgContent.reactionMessage.text}`
+                  : null) || extractedForImport.text;
+
+              const messageType = extractedForImport.messageType;
               const sender = isFromMe ? "operator" : "contact";
               const datetime = msg.messageTimestamp
                 ? new Date(Number(msg.messageTimestamp) * 1000)
@@ -1636,7 +1641,7 @@ export class WebhooksService {
     line: any;
     contactIdentifier: string;
   }): Promise<{ status: string; reason?: string } | null> {
-    const rawInner = params.message?.message;
+    const rawInner = this.resolveMessageContent(params.message);
     const core = this.unwrapNestedMessageContent(rawInner);
     const pm: any =
       core?.protocolMessage ||
@@ -1655,10 +1660,8 @@ export class WebhooksService {
       hasEditedPayload;
 
     if (!isRevoke && !isEdit) {
-      return {
-        status: "ignored",
-        reason: `protocolMessage type ${String(t)}`,
-      };
+      // Protocolos desconhecidos não consomem o webhook — seguem para o catch-all.
+      return null;
     }
 
     const rawTargetId = pm.key?.id;
@@ -1751,7 +1754,7 @@ export class WebhooksService {
       participantName,
     } = params;
 
-    const reactionMsg = message.message?.reactionMessage;
+    const reactionMsg = this.resolveMessageContent(message)?.reactionMessage;
     if (!reactionMsg) {
       return { status: "ignored", reason: "No reactionMessage" };
     }
@@ -1847,6 +1850,129 @@ export class WebhooksService {
     return { status: "success", kind: "reaction_orphan", conversation };
   }
 
+  /** Chaves de metadados do envelope Evolution (não são conteúdo Baileys). */
+  private static readonly ENVELOPE_METADATA_KEYS = new Set([
+    "key",
+    "pushName",
+    "messageTimestamp",
+    "participant",
+    "messageType",
+    "message",
+    "instanceId",
+    "source",
+    "status",
+    "owner",
+    "id",
+    "broadcast",
+    "verifiedBizName",
+  ]);
+
+  /**
+   * Normaliza o payload Baileys independentemente do formato da Evolution:
+   * - `{ key, message: { conversation: "..." } }` (padrão)
+   * - `{ key, conversation: "..." }` (achatado)
+   */
+  private resolveMessageContent(envelope: any): any {
+    const inner = envelope?.message;
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+      return inner;
+    }
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+      return envelope;
+    }
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(envelope)) {
+      if (!WebhooksService.ENVELOPE_METADATA_KEYS.has(k)) {
+        rest[k] = v;
+      }
+    }
+    return Object.keys(rest).length > 0 ? rest : inner ?? envelope;
+  }
+
+  /** Primeira chave Baileys do conteúdo (ex.: pollCreationMessage, locationMessage). */
+  private getBaileysRawType(content: any, envelope?: any): string {
+    const topType = envelope?.messageType;
+    if (typeof topType === "string" && topType.trim()) {
+      return topType.trim();
+    }
+    const core = this.unwrapNestedMessageContent(content);
+    if (!core || typeof core !== "object") return "desconhecido";
+    const keys = Object.keys(core).filter(
+      (k) => k !== "messageContextInfo" && k !== "contextInfo",
+    );
+    return keys[0] || "desconhecido";
+  }
+
+  private buildUnsupportedFallbackText(rawType: string): string {
+    const unhandledType = rawType?.trim() || "desconhecido";
+    return `🤖 [Mensagem não suportada nativamente: ${unhandledType}]\nAbra o WhatsApp Web/Celular para visualizar.`;
+  }
+
+  /** Tipos que já possuem extrator nativo (texto ou mídia). */
+  private hasNativeExtractableContent(content: any): boolean {
+    const core = this.unwrapNestedMessageContent(content);
+    const structured =
+      this.pickStructuredText(content) || this.pickStructuredText(core);
+    if (structured) return true;
+
+    const nativeKeys = [
+      "conversation",
+      "extendedTextMessage",
+      "imageMessage",
+      "stickerMessage",
+      "videoMessage",
+      "audioMessage",
+      "documentMessage",
+      "templateMessage",
+      "highlyStructuredMessage",
+      "buttonsMessage",
+      "listMessage",
+      "buttonsResponseMessage",
+      "listResponseMessage",
+      "interactiveMessage",
+    ];
+
+    for (const key of nativeKeys) {
+      if (content?.[key] || core?.[key]) return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Extrai texto + messageType para persistência.
+   * Catch-all: tipos reais não suportados viram texto de aviso (messageType=text).
+   */
+  private extractMessageForPersistence(
+    content: any,
+    envelope?: any,
+    emptyFallback = "Mensagem recebida",
+  ): { text: string; messageType: string; usedFallback: boolean } {
+    const rawType = this.getBaileysRawType(content, envelope);
+
+    if (WebhooksService.IGNORED_MESSAGE_TYPES.has(rawType)) {
+      return { text: emptyFallback, messageType: "text", usedFallback: false };
+    }
+
+    if (this.hasNativeExtractableContent(content)) {
+      return {
+        text: this.extractDisplayMessageText(content, emptyFallback),
+        messageType: this.getMessageType(content),
+        usedFallback: false,
+      };
+    }
+
+    console.warn(
+      `[Webhook] Catch-all fallback: tipo não suportado nativamente → ${rawType}`,
+    );
+
+    return {
+      text: this.buildUnsupportedFallbackText(rawType),
+      messageType: "text",
+      usedFallback: true,
+    };
+  }
+
   /**
    * Desembrulha mensagens efêmeras / view-once / caption-document (Baileys).
    * O payload útil costuma estar em `.message` dentro desses nós.
@@ -1894,7 +2020,18 @@ export class WebhooksService {
       m?.buttonsResponseMessage?.selectedDisplayText ||
       m?.listResponseMessage?.title ||
       m?.interactiveMessage?.body?.text ||
-      m?.interactiveMessage?.header?.title;
+      m?.interactiveMessage?.header?.title ||
+      m?.locationMessage?.name ||
+      m?.locationMessage?.address ||
+      (m?.locationMessage?.degreesLatitude != null &&
+      m?.locationMessage?.degreesLongitude != null
+        ? `📍 Localização (${m.locationMessage.degreesLatitude}, ${m.locationMessage.degreesLongitude})`
+        : undefined) ||
+      m?.liveLocationMessage?.caption ||
+      m?.contactMessage?.displayName ||
+      m?.contactsArrayMessage?.contacts?.[0]?.displayName ||
+      m?.pollCreationMessage?.name ||
+      m?.pollUpdateMessage?.vote?.selectedOptions?.join(", ");
 
     if (raw === undefined || raw === null) return undefined;
     const s = String(raw).trim();
