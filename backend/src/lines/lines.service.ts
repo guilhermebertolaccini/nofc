@@ -1142,6 +1142,20 @@ export class LinesService {
       }
     }
 
+    // Se a linha acabou de voltar a ficar ativa, restaurar os operadores que
+    // estavam nela antes da queda (auto-relink).
+    if (actionTaken === "activated") {
+      await this.relinkOperatorsOnRecovery(
+        id,
+        line.segment ?? null,
+        line.phone,
+      ).catch((error) => {
+        console.error(
+          `❌ [VerifyLine] Falha no auto-relink da linha ${line.phone}: ${error.message}`,
+        );
+      });
+    }
+
     return {
       success: true,
       phone: line.phone,
@@ -1611,6 +1625,19 @@ export class LinesService {
         }
       });
 
+      // Registrar quais operadores estavam vinculados ANTES de desvincular, para
+      // permitir o auto-relink quando a linha voltar (mesma tabela usada no ban).
+      await this.prisma.lineBanAudit.createMany({
+        data: operatorIds.map((uid) => ({
+          lineId: line.id,
+          linePhone: line.phone,
+          userId: uid,
+          segment: line.segment ?? null,
+          bannedAt: new Date(),
+          bannedReason: "disconnected",
+        })),
+      });
+
       // Desvincular todos os operadores da tabela LineOperator
       await this.prisma.lineOperator.deleteMany({
         where: { lineId },
@@ -1822,6 +1849,112 @@ export class LinesService {
       phone: line.phone,
       lineStatus: "disconnected",
     });
+  }
+
+  /**
+   * Chamado quando uma linha volta a ficar conectada (webhook "open" ou
+   * verifyLineHealth): marca a linha como `active` e restaura os operadores que
+   * estavam vinculados a ela antes da queda. Idempotente e seguro para chamar
+   * de múltiplas origens.
+   */
+  async markLineActiveAndRelinkOperators(lineId: number) {
+    const line = await this.prisma.linesStock.findUnique({
+      where: { id: lineId },
+    });
+    if (!line) return;
+
+    const data: any = {};
+    if (line.lineStatus !== "active") data.lineStatus = "active";
+    if (!line.activatedAt) data.activatedAt = new Date();
+
+    if (Object.keys(data).length > 0) {
+      await this.prisma.linesStock.update({ where: { id: lineId }, data });
+      this.websocketGateway.broadcastLineStatusChange({
+        lineId,
+        phone: line.phone,
+        lineStatus: "active",
+      });
+      console.log(
+        `✅ [Relink] Linha ${line.phone} reativada após reconexão`,
+      );
+    }
+
+    await this.relinkOperatorsOnRecovery(
+      lineId,
+      line.segment ?? null,
+      line.phone,
+    );
+  }
+
+  /**
+   * Re-vincula à linha recuperada os operadores que estavam nela antes da queda
+   * (registrados em LineBanAudit por handleBannedLine/handleDisconnectedLine).
+   * Só re-vincula quem AINDA está sem linha (não rouba de quem já foi realocado)
+   * e respeita o limite de operadores por linha do segmento.
+   */
+  async relinkOperatorsOnRecovery(
+    lineId: number,
+    segment: number | null,
+    linePhone: string,
+  ) {
+    // Janela de recuperação: operadores desvinculados nas últimas 24h.
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const audits = await this.prisma.lineBanAudit.findMany({
+      where: { lineId, userId: { not: null }, bannedAt: { gte: since } },
+      orderBy: { bannedAt: "desc" },
+      distinct: ["userId"],
+      select: { userId: true },
+    });
+
+    const candidateIds = audits
+      .map((a) => a.userId)
+      .filter((v): v is number => v != null);
+
+    if (candidateIds.length === 0) return;
+
+    // Limite de operadores por linha (do segmento; default 2).
+    let maxOperators = 2;
+    if (segment) {
+      const seg = await this.prisma.segment.findUnique({
+        where: { id: segment },
+        select: { maxOperatorsPerLine: true },
+      });
+      if (seg?.maxOperatorsPerLine) maxOperators = seg.maxOperatorsPerLine;
+    }
+
+    for (const userId of candidateIds) {
+      const current = await this.prisma.lineOperator.count({
+        where: { lineId },
+      });
+      if (current >= maxOperators) break;
+
+      const operator = await this.prisma.user.findUnique({
+        where: { id: userId },
+        include: { lineOperators: true },
+      });
+
+      // Pular se o operador não existe ou já foi realocado para outra linha.
+      if (!operator || operator.lineOperators.length > 0 || operator.line) {
+        continue;
+      }
+
+      try {
+        await this.assignOperatorToLine(lineId, userId);
+        console.log(
+          `🔗 [Relink] Operador ${operator.name} re-vinculado à linha ${linePhone} após recuperação`,
+        );
+        this.websocketGateway.emitToUser(userId, "line-assigned", {
+          lineId,
+          linePhone,
+          message: `Linha ${linePhone} reconectada — você foi re-vinculado automaticamente.`,
+        });
+      } catch (error: any) {
+        console.error(
+          `❌ [Relink] Falha ao re-vincular operador ${userId} à linha ${lineId}: ${error.message}`,
+        );
+      }
+    }
   }
 
   /**

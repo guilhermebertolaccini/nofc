@@ -957,6 +957,18 @@ export class WebhooksService {
           const line = await this.findLineByPhone(phoneNumber);
 
           if (line) {
+            // Linha reconectou: marcar como ATIVA e restaurar os operadores que
+            // estavam vinculados antes da queda, ANTES da lógica de preenchimento
+            // abaixo (que só completa vagas restantes).
+            await this.linesService
+              .markLineActiveAndRelinkOperators(line.id)
+              .catch((error) => {
+                console.error(
+                  `❌ [Webhook] Erro ao reativar/relinkar linha ${line.id}:`,
+                  error.message,
+                );
+              });
+
             // Buscar configuração da Evolution API para importar histórico
             const evolution = await this.prisma.evolution.findUnique({
               where: { evolutionName: line.evolutionName },
