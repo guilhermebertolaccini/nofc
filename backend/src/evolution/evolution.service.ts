@@ -514,6 +514,34 @@ export class EvolutionService {
   }
 
   /**
+   * Remove a instância por completo na Evolution (DELETE /instance/delete).
+   * Usado para garantir credenciais limpas antes de recriar e reparear
+   * (quebra loops de connectionReplaced/440). Nunca lança — retorna true/false.
+   */
+  async deleteInstance(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+  ): Promise<boolean> {
+    const base = evolutionUrl.replace(/\/$/, '');
+    try {
+      await axios.delete(`${base}/instance/delete/${instanceName}`, {
+        headers: { apikey: evolutionKey },
+        timeout: 10000,
+      });
+      console.log(`🗑️ [Evolution] instância ${instanceName} deletada`);
+      return true;
+    } catch (error: any) {
+      console.warn(
+        `[Evolution] deleteInstance ${instanceName} falhou: ${
+          error?.response?.status || error?.message || 'erro'
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /**
    * Reinicia uma instância (restart) — força o Baileys a recriar a conexão.
    * Nunca lança — retorna true/false.
    */

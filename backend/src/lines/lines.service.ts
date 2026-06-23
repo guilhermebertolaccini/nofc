@@ -691,9 +691,43 @@ export class LinesService {
   }
 
   /**
-   * Força a reconexão de uma linha: encerra a sessão "zumbi" (logout), zera o
-   * status para `connecting` e devolve um QR Code novo — sem precisar apagar a
-   * linha. Se a instância não existir mais na Evolution (404), recria e tenta de novo.
+   * Recriação "limpa": deleta a instância e cria de novo, garantindo que NÃO
+   * sobrem credenciais antigas. É isso que quebra o loop de connectionReplaced
+   * (statusReason 440): uma instância recém-criada não tem sessão para ser
+   * "substituída", então o /connect gera um QR de pareamento novo de verdade.
+   */
+  private async hardRecreateInstance(
+    line: { phone: string; receiveMedia?: boolean | null },
+    evolution: { evolutionUrl: string; evolutionKey: string },
+    instanceName: string,
+  ): Promise<void> {
+    await this.evolutionService.deleteInstance(
+      evolution.evolutionUrl,
+      evolution.evolutionKey,
+      instanceName,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await this.recreateInstance(line, evolution, instanceName);
+  }
+
+  /** true se a resposta do fetchFreshQr realmente trouxe um QR/pairing escaneável. */
+  private hasScannableQr(result: any): boolean {
+    return Boolean(result?.qrcode || result?.pairingCode);
+  }
+
+  /**
+   * Força a reconexão de uma linha gerando um QR Code novo, mesmo quando a sessão
+   * está "zumbi" ou presa num loop de connectionReplaced (440).
+   *
+   * Estratégia robusta (não depende de o /logout limpar credenciais nesta versão
+   * da Evolution):
+   *   1. logout para tentar derrubar a sessão atual;
+   *   2. aguarda o estado assentar em "close" (evita disparar /connect contra um
+   *      socket ainda aberto, o que causaria outro 440);
+   *   3. tenta /connect → se vier QR, ótimo;
+   *   4. se NÃO vier QR (creds antigas ainda presentes / loop) ou a instância
+   *      sumir (404), faz recriação limpa (delete + create) e tenta de novo —
+   *      garantindo um QR de pareamento novo, sem loop.
    */
   async reconnectLine(id: number) {
     const line = await this.findOne(id);
@@ -711,15 +745,28 @@ export class LinesService {
       `🔄 [Reconnect] Iniciando reconexão forçada da linha ${line.phone} (${instanceName})`,
     );
 
-    // 1. Derrubar a sessão atual (mesmo que esteja em estado "open" zumbi).
+    // 1. Derrubar a sessão atual (mesmo que esteja "open" zumbi ou em loop).
     await this.evolutionService.logoutInstance(
       evolution.evolutionUrl,
       evolution.evolutionKey,
       instanceName,
     );
 
-    // 2. Aguardar a Evolution processar o logout.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // 2. Aguardar a conexão assentar em "close" antes de pedir QR — disparar
+    //    /connect contra um socket ainda aberto/conectando gera connectionReplaced.
+    let settledState = "unknown";
+    for (let attempt = 0; attempt < 5; attempt++) {
+      settledState = await this.fetchConnectionStateOnce(
+        evolution.evolutionUrl,
+        evolution.evolutionKey,
+        instanceName,
+        2000, // poll a cada 2s
+      );
+      if (settledState === "close" || settledState === "unknown") break;
+    }
+    console.log(
+      `🔄 [Reconnect] Estado após logout para ${line.phone}: ${settledState}`,
+    );
 
     // 3. Limpar status stale e cache de health check.
     await this.prisma.linesStock.update({
@@ -731,31 +778,45 @@ export class LinesService {
       instanceName,
     );
 
-    // 4. Buscar QR novo. Se a instância sumiu (404), recriar e tentar de novo.
+    // 4. Tentar obter QR. Em qualquer falha que não seja um QR válido, faz
+    //    recriação limpa (delete + create) — caminho que sempre quebra o 440.
     try {
-      return await this.fetchFreshQr(evolution, instanceName);
-    } catch (error) {
-      if (error.response?.status === 404) {
-        console.warn(
-          `⚠️ [Reconnect] Instância ${instanceName} não existe mais na Evolution. Recriando...`,
-        );
-        await this.recreateInstance(line, evolution, instanceName);
-        return await this.fetchFreshQr(evolution, instanceName);
+      const result = await this.fetchFreshQr(evolution, instanceName);
+      if (this.hasScannableQr(result)) {
+        return result;
       }
+      console.warn(
+        `⚠️ [Reconnect] /connect não retornou QR para ${line.phone} (creds antigas/loop). Recriando instância do zero...`,
+      );
+    } catch (error) {
+      const status = error.response?.status;
+      console.warn(
+        `⚠️ [Reconnect] /connect falhou para ${line.phone} (HTTP ${status ?? "?"}). Recriando instância do zero...`,
+      );
+    }
 
+    // 5. Recriação limpa garantida + novo QR.
+    try {
+      await this.hardRecreateInstance(line, evolution, instanceName);
+      const result = await this.fetchFreshQr(evolution, instanceName);
+      if (this.hasScannableQr(result)) {
+        return result;
+      }
+      // Mesmo após recriar, a instância pode levar alguns segundos para emitir o QR.
+      return {
+        qrcode: null,
+        message:
+          "Instância recriada. Aguarde alguns segundos e toque em Reconectar novamente para ler o QR Code.",
+      };
+    } catch (error) {
       console.error(
-        "❌ [Reconnect] Erro ao reconectar linha:",
+        "❌ [Reconnect] Erro ao recriar/reconectar linha:",
         error.response?.data || error.message,
       );
-
-      if (error.response?.data?.message) {
-        throw new BadRequestException(
-          `Erro na Evolution API: ${error.response.data.message}`,
-        );
-      }
-
       throw new BadRequestException(
-        `Erro ao reconectar linha: ${error.message || "Erro desconhecido"}`,
+        `Erro ao reconectar linha: ${
+          error.response?.data?.message || error.message || "Erro desconhecido"
+        }`,
       );
     }
   }
