@@ -483,4 +483,64 @@ export class EvolutionService {
       { headers: { apikey: evolutionKey }, timeout: 30000 },
     );
   }
+
+  /**
+   * Encerra a sessão WhatsApp de uma instância (logout) sem deletar a instância.
+   * Usado para destravar sessões "zumbi" (instância existe mas o WhatsApp caiu)
+   * antes de pedir um novo QR Code. Nunca lança — retorna true/false.
+   */
+  async logoutInstance(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+  ): Promise<boolean> {
+    const base = evolutionUrl.replace(/\/$/, '');
+    try {
+      await axios.delete(`${base}/instance/logout/${instanceName}`, {
+        headers: { apikey: evolutionKey },
+        timeout: 10000,
+      });
+      console.log(`🔌 [Evolution] logout da instância ${instanceName} OK`);
+      return true;
+    } catch (error: any) {
+      // 404 (instância não existe) ou já deslogada não são erros fatais aqui.
+      console.warn(
+        `[Evolution] logoutInstance ${instanceName} falhou: ${
+          error?.response?.status || error?.message || 'erro'
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Reinicia uma instância (restart) — força o Baileys a recriar a conexão.
+   * Nunca lança — retorna true/false.
+   */
+  async restartInstance(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+  ): Promise<boolean> {
+    const base = evolutionUrl.replace(/\/$/, '');
+    try {
+      await axios.post(
+        `${base}/instance/restart/${instanceName}`,
+        {},
+        {
+          headers: { apikey: evolutionKey },
+          timeout: 10000,
+        },
+      );
+      console.log(`🔄 [Evolution] restart da instância ${instanceName} OK`);
+      return true;
+    } catch (error: any) {
+      console.warn(
+        `[Evolution] restartInstance ${instanceName} falhou: ${
+          error?.response?.status || error?.message || 'erro'
+        }`,
+      );
+      return false;
+    }
+  }
 }

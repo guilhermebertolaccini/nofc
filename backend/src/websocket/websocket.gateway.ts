@@ -3328,6 +3328,23 @@ export class WebsocketGateway
     );
   }
 
+  /**
+   * Broadcast global de mudança de status de uma linha (conectou, caiu, banida).
+   * Usado pelas telas de gestão de linhas (ex.: Linhas.tsx) para atualizar o badge
+   * em tempo real sem depender de o admin ser o operador vinculado.
+   */
+  broadcastLineStatusChange(payload: {
+    lineId: number;
+    phone?: string;
+    lineStatus: string;
+    reason?: string;
+  }) {
+    this.server.emit("line_status", payload);
+    console.log(
+      `📢 [WebSocket] line_status → linha ${payload.phone ?? payload.lineId} = ${payload.lineStatus}`,
+    );
+  }
+
   async emitNewMessage(conversation: any) {
     if (!conversation?.contactPhone) {
       console.warn(

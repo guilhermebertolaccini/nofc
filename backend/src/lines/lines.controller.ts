@@ -117,6 +117,12 @@ export class LinesController {
     return this.linesService.getQRCode(+id);
   }
 
+  @Post(':id/reconnect')
+  @Roles(Role.admin, Role.ativador)
+  reconnect(@Param('id') id: string) {
+    return this.linesService.reconnectLine(+id);
+  }
+
   @Patch(':id')
   @Roles(Role.admin)
   update(@Param('id') id: string, @Body() updateLineDto: UpdateLineDto) {

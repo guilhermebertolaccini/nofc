@@ -23,6 +23,11 @@ import { CpcService } from "../cpc/cpc.service";
 export class WebhooksService {
   private readonly uploadsDir = "./uploads";
 
+  // Linhas com uma re-verificação de desconexão já agendada (evita timers duplicados
+  // quando a Evolution dispara vários CONNECTION_UPDATE "close" em sequência).
+  private readonly pendingDisconnectReverify = new Set<number>();
+  private static readonly DISCONNECT_REVERIFY_DELAY_MS = 20000;
+
   constructor(
     private prisma: PrismaService,
     private conversationsService: ConversationsService,
@@ -35,6 +40,46 @@ export class WebhooksService {
     private evolutionService: EvolutionService,
     private cpcService: CpcService,
   ) {}
+
+  /**
+   * Agenda uma única re-verificação de saúde para uma linha que reportou desconexão
+   * temporária. Após o atraso, chama verifyLineHealth (que reconsulta a Evolution e só
+   * marca a linha como caída se o estado real continuar fora de "open"). Idempotente:
+   * múltiplos "close" seguidos da mesma linha agendam apenas um timer.
+   */
+  private scheduleDisconnectReverify(
+    lineId: number,
+    phone: string,
+    reason: unknown,
+  ): void {
+    if (this.pendingDisconnectReverify.has(lineId)) {
+      console.log(
+        `⏳ [Webhook] Re-verificação da linha ${phone} já agendada — ignorando duplicado.`,
+      );
+      return;
+    }
+
+    this.pendingDisconnectReverify.add(lineId);
+    console.warn(
+      `⚠️ [Webhook] Linha ${phone} reportou DESCONEXÃO (motivo: "${reason}"). ` +
+        `Agendando re-verificação em ${WebhooksService.DISCONNECT_REVERIFY_DELAY_MS / 1000}s.`,
+    );
+
+    setTimeout(async () => {
+      this.pendingDisconnectReverify.delete(lineId);
+      try {
+        const result = await this.linesService.verifyLineHealth(lineId);
+        console.log(
+          `🔁 [Webhook] Re-verificação da linha ${phone}: estado=${result?.connectionState}, ` +
+            `ação=${result?.actionTaken}, status=${result?.newStatus}.`,
+        );
+      } catch (err: any) {
+        console.error(
+          `❌ [Webhook] Falha na re-verificação da linha ${phone}: ${err?.message || err}`,
+        );
+      }
+    }, WebhooksService.DISCONNECT_REVERIFY_DELAY_MS).unref?.();
+  }
 
   async handleEvolutionMessage(data: any) {
     try {
@@ -881,14 +926,15 @@ export class WebhooksService {
                 reason,
               };
             } else {
-              // Desconexão temporária (timeout, connectionLost, etc.)
-              // CORREÇÃO: Não desconectar imediatamente via webhook. Deixar o Monitor verificar.
-              console.warn(
-                `⚠️ [Webhook] Linha ${line.phone} reportou DESCONEXÃO. Delegando verificação para o Monitor.`,
-              );
-              // await this.linesService.handleDisconnectedLine(line.id);
+              // Desconexão temporária (timeout, connectionLost, etc.).
+              // NÃO desconectamos imediatamente — um blip momentâneo causaria
+              // falso-positivo e desvincularia operadores à toa. Em vez disso,
+              // agendamos UMA re-verificação: passados ~20s, consultamos a Evolution
+              // novamente via verifyLineHealth; se a linha voltou para "open" nada
+              // acontece, se continuar caída ela é marcada/realocada lá dentro.
+              this.scheduleDisconnectReverify(line.id, line.phone, reason);
               return {
-                status: "line_disconnected_reported",
+                status: "line_disconnected_reverify_scheduled",
                 lineId: line.id,
                 reason,
               };

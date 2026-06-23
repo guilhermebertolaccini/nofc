@@ -23,6 +23,8 @@ import {
 import { QrCode, Loader2, RefreshCw, Activity } from "lucide-react";
 import { useNotificationSound } from "@/hooks/useNotificationSound";
 import { toast } from "@/hooks/use-toast";
+import { useRealtimeSubscription } from "@/hooks/useRealtimeConnection";
+import { WS_EVENTS } from "@/services/websocket";
 import { linesService, segmentsService, evolutionService, getAuthToken, type Line as ApiLine, type Segment, type Evolution } from "@/services/api";
 
 interface Line {
@@ -130,6 +132,24 @@ export default function Linhas() {
       if (intervalId) clearInterval(intervalId);
     };
   }, [isQrCodeOpen, qrCodeData, qrCodeLineId, qrCodeState, playSuccessSound]);
+
+  // Atualização em tempo real: quando o backend detecta que uma linha caiu/voltou
+  // (re-verificação do webhook, monitor ou banimento), recarregamos a tabela para
+  // que o status pare de mostrar "Ativa" para uma linha que na verdade está morta.
+  useRealtimeSubscription(
+    WS_EVENTS.LINE_STATUS,
+    () => {
+      loadData();
+    },
+    [statusFilter, segmentFilter, startDate, endDate],
+  );
+  useRealtimeSubscription(
+    WS_EVENTS.LINE_BANNED,
+    () => {
+      loadData();
+    },
+    [statusFilter, segmentFilter, startDate, endDate],
+  );
 
   const loadData = async () => {
     setIsLoading(true);
@@ -456,17 +476,30 @@ export default function Linhas() {
     }
   };
 
-  const handleShowQrCode = async (line?: Line) => {
+  const handleShowQrCode = async (line?: Line, opts?: { force?: boolean }) => {
     const targetLine = line || editingLine;
     if (!targetLine) return;
+
+    const force = opts?.force === true;
 
     setQrCodeState('loading');
     setQrCodeData(null);
     setQrCodeLineId(Number(targetLine.id)); // Salvar ID da linha para polling
     setIsQrCodeOpen(true);
 
+    if (force) {
+      toast({
+        title: "Reconectando...",
+        description: `Derrubando a sessão atual da linha ${targetLine.phone} e gerando novo QR Code...`,
+      });
+    }
+
     try {
-      const response = await linesService.getQrCode(Number(targetLine.id));
+      // Reconexão forçada derruba a sessão "zumbi" antes de pedir um QR novo;
+      // o fluxo normal apenas busca o QR (e respeita "já conectada").
+      const response = force
+        ? await linesService.reconnect(Number(targetLine.id))
+        : await linesService.getQrCode(Number(targetLine.id));
       console.log('QR Code response:', response);
 
       if (response.connected) {
@@ -803,6 +836,15 @@ export default function Linhas() {
                   title="Verificar Conexão (Forçar)"
                 >
                   <Activity className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-orange-500 hover:text-orange-700"
+                  onClick={() => handleShowQrCode(line, { force: true })}
+                  title="Reconectar (derruba a sessão atual e gera novo QR Code)"
+                >
+                  <RefreshCw className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="ghost"

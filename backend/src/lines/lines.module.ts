@@ -9,6 +9,7 @@ import { ControlPanelModule } from '../control-panel/control-panel.module';
 import { SystemEventsModule } from '../system-events/system-events.module';
 import { HealthCheckCacheModule } from '../health-check-cache/health-check-cache.module';
 import { OperatorQueueModule } from '../operator-queue/operator-queue.module';
+import { EvolutionModule } from '../evolution/evolution.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { OperatorQueueModule } from '../operator-queue/operator-queue.module';
     SystemEventsModule,
     HealthCheckCacheModule,
     forwardRef(() => OperatorQueueModule),
+    EvolutionModule,
   ],
   controllers: [LinesController],
   providers: [LinesService, LinesSchedulerService, PrismaService],

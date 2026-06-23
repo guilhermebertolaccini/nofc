@@ -18,6 +18,7 @@ import {
 } from "../system-events/system-events.service";
 import { HealthCheckCacheService } from "../health-check-cache/health-check-cache.service";
 import { OperatorQueueService } from "../operator-queue/operator-queue.service";
+import { EvolutionService } from "../evolution/evolution.service";
 import axios from "axios";
 
 @Injectable()
@@ -31,6 +32,7 @@ export class LinesService {
     private healthCheckCacheService: HealthCheckCacheService,
     @Inject(forwardRef(() => OperatorQueueService))
     private queueService: OperatorQueueService,
+    private evolutionService: EvolutionService,
   ) { }
 
   async create(createLineDto: CreateLineDto, createdBy?: number) {
@@ -553,60 +555,7 @@ export class LinesService {
       }
 
       // Buscar o QR Code
-      const response = await axios.get(
-        `${evolution.evolutionUrl}/instance/connect/${instanceName}`,
-        {
-          headers: {
-            apikey: evolution.evolutionKey,
-          },
-        },
-      );
-
-      console.log(
-        "Resposta do QR Code:",
-        JSON.stringify(response.data, null, 2),
-      );
-
-      // Normalizar a resposta para o formato esperado pelo frontend
-      // A Evolution API pode retornar em diferentes formatos
-      let qrcode = null;
-
-      if (response.data?.base64) {
-        // Formato: { base64: "data:image/png;base64,..." }
-        qrcode = response.data.base64;
-      } else if (response.data?.qrcode?.base64) {
-        // Formato: { qrcode: { base64: "..." } }
-        qrcode = response.data.qrcode.base64;
-      } else if (response.data?.code) {
-        // Formato: { code: "texto do qr" } - precisa gerar imagem
-        qrcode = response.data.code;
-      } else if (
-        typeof response.data === "string" &&
-        response.data.startsWith("data:image")
-      ) {
-        // Formato: string base64 direto
-        qrcode = response.data;
-      } else if (response.data?.pairingCode) {
-        // Pairing code para WhatsApp Web
-        return {
-          qrcode: null,
-          pairingCode: response.data.pairingCode,
-          message: "Use o código de pareamento",
-        };
-      }
-
-      if (!qrcode) {
-        console.warn("Formato de resposta não reconhecido:", response.data);
-        // Retornar os dados brutos para debug
-        return {
-          qrcode: null,
-          rawData: response.data,
-          message:
-            "QR Code não disponível no momento. Verifique se a instância está pronta.",
-        };
-      }
-
-      return { qrcode };
+      return await this.fetchFreshQr(evolution, instanceName);
     } catch (error) {
       console.error(
         "Erro ao obter QR Code:",
@@ -627,6 +576,186 @@ export class LinesService {
 
       throw new BadRequestException(
         `Erro ao obter QR Code: ${error.message || "Erro desconhecido"}`,
+      );
+    }
+  }
+
+  /**
+   * Busca um QR Code novo direto na Evolution (GET /instance/connect) e normaliza
+   * os diversos formatos de resposta. NÃO consulta connectionState — sempre força
+   * um QR. Lança o erro do axios para o chamador tratar (ex.: 404 = instância não existe).
+   */
+  private async fetchFreshQr(
+    evolution: { evolutionUrl: string; evolutionKey: string },
+    instanceName: string,
+  ): Promise<any> {
+    const response = await axios.get(
+      `${evolution.evolutionUrl}/instance/connect/${instanceName}`,
+      {
+        headers: {
+          apikey: evolution.evolutionKey,
+        },
+      },
+    );
+
+    console.log("Resposta do QR Code:", JSON.stringify(response.data, null, 2));
+
+    // Normalizar a resposta para o formato esperado pelo frontend
+    // A Evolution API pode retornar em diferentes formatos
+    let qrcode = null;
+
+    if (response.data?.base64) {
+      // Formato: { base64: "data:image/png;base64,..." }
+      qrcode = response.data.base64;
+    } else if (response.data?.qrcode?.base64) {
+      // Formato: { qrcode: { base64: "..." } }
+      qrcode = response.data.qrcode.base64;
+    } else if (response.data?.code) {
+      // Formato: { code: "texto do qr" } - precisa gerar imagem
+      qrcode = response.data.code;
+    } else if (
+      typeof response.data === "string" &&
+      response.data.startsWith("data:image")
+    ) {
+      // Formato: string base64 direto
+      qrcode = response.data;
+    } else if (response.data?.pairingCode) {
+      // Pairing code para WhatsApp Web
+      return {
+        qrcode: null,
+        pairingCode: response.data.pairingCode,
+        message: "Use o código de pareamento",
+      };
+    }
+
+    if (!qrcode) {
+      console.warn("Formato de resposta não reconhecido:", response.data);
+      // Retornar os dados brutos para debug
+      return {
+        qrcode: null,
+        rawData: response.data,
+        message:
+          "QR Code não disponível no momento. Verifique se a instância está pronta.",
+      };
+    }
+
+    return { qrcode };
+  }
+
+  /**
+   * Recria a instância na Evolution quando ela sumiu (404) — usado pelo fluxo de
+   * reconexão para evitar o beco sem saída de "apague e crie a linha de novo".
+   * Mantém o mesmo nome de instância e webhook usados em create().
+   */
+  private async recreateInstance(
+    line: { phone: string; receiveMedia?: boolean | null },
+    evolution: { evolutionUrl: string; evolutionKey: string },
+    instanceName: string,
+  ): Promise<void> {
+    const webhookUrl = `${process.env.APP_URL || "http://localhost:3000"}/webhooks/evolution`;
+    const enableBase64 = line.receiveMedia === true;
+
+    await axios.post(
+      `${evolution.evolutionUrl}/instance/create`,
+      {
+        instanceName,
+        qrcode: true,
+        integration: "WHATSAPP-BAILEYS",
+        syncFullHistory: true,
+        webhook: {
+          enabled: true,
+          url: webhookUrl,
+          byEvents: false,
+          base64: enableBase64,
+          events: [
+            "MESSAGES_UPSERT",
+            "MESSAGES_UPDATE",
+            "SEND_MESSAGE",
+            "CONNECTION_UPDATE",
+            "QRCODE_UPDATED",
+          ],
+        },
+      },
+      {
+        headers: {
+          apikey: evolution.evolutionKey,
+          "Content-Type": "application/json",
+        },
+        timeout: 30000,
+      },
+    );
+
+    console.log(`♻️ [Reconnect] Instância ${instanceName} recriada na Evolution`);
+    // Pequena espera para a instância ficar pronta antes do connect.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  /**
+   * Força a reconexão de uma linha: encerra a sessão "zumbi" (logout), zera o
+   * status para `connecting` e devolve um QR Code novo — sem precisar apagar a
+   * linha. Se a instância não existir mais na Evolution (404), recria e tenta de novo.
+   */
+  async reconnectLine(id: number) {
+    const line = await this.findOne(id);
+    const evolution = await this.prisma.evolution.findUnique({
+      where: { evolutionName: line.evolutionName },
+    });
+
+    if (!evolution) {
+      throw new NotFoundException("Evolution não encontrada para esta linha");
+    }
+
+    const instanceName = `line_${line.phone.replace(/\D/g, "")}`;
+
+    console.log(
+      `🔄 [Reconnect] Iniciando reconexão forçada da linha ${line.phone} (${instanceName})`,
+    );
+
+    // 1. Derrubar a sessão atual (mesmo que esteja em estado "open" zumbi).
+    await this.evolutionService.logoutInstance(
+      evolution.evolutionUrl,
+      evolution.evolutionKey,
+      instanceName,
+    );
+
+    // 2. Aguardar a Evolution processar o logout.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    // 3. Limpar status stale e cache de health check.
+    await this.prisma.linesStock.update({
+      where: { id },
+      data: { lineStatus: "connecting" },
+    });
+    this.healthCheckCacheService.clearCache(
+      evolution.evolutionUrl,
+      instanceName,
+    );
+
+    // 4. Buscar QR novo. Se a instância sumiu (404), recriar e tentar de novo.
+    try {
+      return await this.fetchFreshQr(evolution, instanceName);
+    } catch (error) {
+      if (error.response?.status === 404) {
+        console.warn(
+          `⚠️ [Reconnect] Instância ${instanceName} não existe mais na Evolution. Recriando...`,
+        );
+        await this.recreateInstance(line, evolution, instanceName);
+        return await this.fetchFreshQr(evolution, instanceName);
+      }
+
+      console.error(
+        "❌ [Reconnect] Erro ao reconectar linha:",
+        error.response?.data || error.message,
+      );
+
+      if (error.response?.data?.message) {
+        throw new BadRequestException(
+          `Erro na Evolution API: ${error.response.data.message}`,
+        );
+      }
+
+      throw new BadRequestException(
+        `Erro ao reconectar linha: ${error.message || "Erro desconhecido"}`,
       );
     }
   }
@@ -777,6 +906,36 @@ export class LinesService {
     });
   }
 
+  /**
+   * Consulta o estado de conexão de uma instância na Evolution uma única vez,
+   * com uma pequena espera antes (para confirmar estados transitórios como
+   * "connecting"). Nunca lança — devolve "unknown" em qualquer erro/timeout.
+   */
+  private async fetchConnectionStateOnce(
+    evolutionUrl: string,
+    evolutionKey: string,
+    instanceName: string,
+    delayMs = 8000,
+  ): Promise<string> {
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    try {
+      const response = await axios.get(
+        `${evolutionUrl}/instance/connectionState/${instanceName}`,
+        {
+          headers: { apikey: evolutionKey },
+          timeout: 10000,
+        },
+      );
+      return (
+        response.data?.instance?.state || response.data?.state || "unknown"
+      );
+    } catch {
+      return "unknown";
+    }
+  }
+
   async verifyLineHealth(id: number) {
     const line = await this.findOne(id);
     const evolution = await this.prisma.evolution.findUnique({
@@ -858,6 +1017,9 @@ export class LinesService {
 
     let newStatus = line.lineStatus;
     let actionTaken = "none";
+    // Marca que handleBannedLine/handleDisconnectedLine já persistiu o status
+    // (com desvinculação de operadores), evitando um update redundante depois.
+    let alreadyHandled = false;
 
     if (isConnected) {
       if (line.lineStatus !== "active") {
@@ -872,15 +1034,43 @@ export class LinesService {
           newStatus = "ban";
           actionTaken = "banned";
         }
+      } else if (
+        connectionState === "connecting" &&
+        line.lineStatus === "active" &&
+        line.activatedAt
+      ) {
+        // Sessão "zumbi": a linha já esteve genuinamente ativa (activatedAt) mas a
+        // Evolution agora reporta "connecting" — típico de logout em que o Baileys
+        // fica tentando reconectar para sempre. Confirmamos com UMA re-checagem antes
+        // de desconectar, para não reagir a um "connecting" passageiro.
+        const recheckState = await this.fetchConnectionStateOnce(
+          evolution.evolutionUrl,
+          evolution.evolutionKey,
+          instanceName,
+        );
+
+        if (recheckState === "open" || recheckState === "connected") {
+          // Voltou sozinha — não fazemos nada.
+          connectionState = recheckState;
+          actionTaken = "none";
+        } else {
+          console.warn(
+            `🔌 [VerifyLine] Linha ${line.phone} presa em "connecting" (re-check: ${recheckState}). Marcando como desconectada.`,
+          );
+          await this.handleDisconnectedLine(id);
+          newStatus = "disconnected";
+          actionTaken = "disconnected";
+          alreadyHandled = true;
+        }
       } else {
-        // Se a resposta for "unknown", "connecting", ou qualquer outra coisa por erro de API (timeout/404),
-        // NÃO DESCONECTAMOS. Apenas ignoramos e mantemos o status anterior intacto.
+        // "unknown" (timeout/404) ou "connecting" de uma linha que nunca ativou:
+        // NÃO DESCONECTAMOS. Mantemos o status anterior intacto.
         actionTaken = "none";
       }
     }
 
     // 4. Atualizar no Banco
-    if (newStatus !== line.lineStatus) {
+    if (!alreadyHandled && newStatus !== line.lineStatus) {
       if (newStatus === "ban") {
         await this.handleBannedLine(id, "monitor-check"); // Usa a lógica completa de banimento (desvincular operadores)
       } else {
@@ -1283,6 +1473,14 @@ export class LinesService {
     console.log(
       `✅ [handleBannedLine] Linha ${lineId} marcada como banida e operadores desvinculados`,
     );
+
+    // Broadcast global para as telas de gestão atualizarem o status em tempo real.
+    this.websocketGateway.broadcastLineStatusChange({
+      lineId: line.id,
+      phone: line.phone,
+      lineStatus: "ban",
+      reason: bannedReason,
+    });
   }
 
   // Lógica para linhas temporariamente desconectadas
@@ -1556,6 +1754,13 @@ export class LinesService {
     console.log(
       `✅ [handleDisconnectedLine] Linha ${lineId} marcada como desconectada e operadores desvinculados`,
     );
+
+    // Broadcast global para as telas de gestão atualizarem o status em tempo real.
+    this.websocketGateway.broadcastLineStatusChange({
+      lineId: line.id,
+      phone: line.phone,
+      lineStatus: "disconnected",
+    });
   }
 
   /**

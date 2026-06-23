@@ -283,7 +283,7 @@ export interface Line {
   id: number;
   phone: string;
   realNumber?: string | null;
-  lineStatus: 'active' | 'ban';
+  lineStatus: 'connecting' | 'active' | 'disconnected' | 'ban';
   segment: number | null;
   segmentName?: string | null;
   linkedTo: number | null;
@@ -421,6 +421,19 @@ export const linesService = {
     actionTaken: string;
   }> => {
     return apiRequest(`/lines/${id}/verify`, { method: 'POST' });
+  },
+
+  /**
+   * Força a reconexão de uma linha "zumbi": derruba a sessão atual na Evolution e
+   * devolve um QR Code novo para escanear (sem precisar apagar a linha).
+   */
+  reconnect: async (id: number): Promise<{
+    qrcode: string | null;
+    connected?: boolean;
+    pairingCode?: string;
+    message?: string;
+  }> => {
+    return apiRequest(`/lines/${id}/reconnect`, { method: 'POST' });
   },
 
   delete: async (id: number): Promise<void> => {
