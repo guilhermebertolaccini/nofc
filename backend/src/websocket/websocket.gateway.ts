@@ -601,13 +601,16 @@ export class WebsocketGateway
               instanceName,
             );
 
-          // Se linha está banida ou desconectada, realocar ANTES de enviar mensagem
+          // Só realocar/banir ANTES de enviar se a linha estiver COMPROVADAMENTE
+          // caída (ban/disconnected). Uma leitura inconclusiva (null/timeout/
+          // "connecting"/"unknown") NÃO deve banir uma linha saudável e desvincular
+          // o operador — isso criava um ciclo em que cada tentativa de envio
+          // derrubava a única linha e travava o operador. Em caso de dúvida,
+          // seguimos para o envio (a fase de envio já tem retry/realocação).
+          const normalizedLineStatus = (lineStatus || "").toLowerCase();
           if (
-            !lineStatus ||
-            lineStatus === "ban" ||
-            lineStatus === "disconnected" ||
-            lineStatus.toLowerCase() === "ban" ||
-            lineStatus.toLowerCase() === "disconnected"
+            normalizedLineStatus === "ban" ||
+            normalizedLineStatus === "disconnected"
           ) {
             console.warn(
               `⚠️ [WebSocket] Linha ${currentLine.phone} está ${lineStatus || "desconectada"} antes de enviar mensagem. Marcando como banida e realocando...`,
